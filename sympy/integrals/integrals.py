@@ -659,8 +659,9 @@ class Integral(Expr):
                 limits[i] = Tuple(xab[0],
                                   *[l.subs(old, new) for l in xab[1:]])
             dummies.add(xab[0])
-        if not dummies.intersection(old_atoms):
-            integrand = integrand.subs(old, new)
+        # Hack this out temporarily to allow certain substitutions
+        #if not dummies.intersection(old_atoms):
+        integrand = integrand.subs(old, new)
         return Integral(integrand, *limits)
 
     def as_sum(self, n, method="midpoint"):

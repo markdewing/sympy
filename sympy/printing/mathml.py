@@ -6,6 +6,7 @@ from sympy import Basic, sympify, S
 from sympy.simplify import fraction
 from printer import Printer
 from conventions import split_super_sub
+from sympy.prototype.vector import Vector
 
 
 class MathMLPrinter(Printer):
@@ -40,6 +41,8 @@ class MathMLPrinter(Printer):
             'int': 'cn',
             'Pow': 'power',
             'Symbol': 'ci',
+            'Function': 'ci',
+            'IndexedBase': 'ci',
             'Integral': 'int',
             'Sum': 'sum',
             'sin': 'sin',
@@ -130,6 +133,23 @@ class MathMLPrinter(Printer):
         while len(plusNodes) > 0:
             x.appendChild(plusNodes.pop(0))
         return x
+
+    def _print_IndexedBase(self, e):
+        ci = self.dom.createElement(self.mathml_tag(e))
+        ci.appendChild(self.dom.createTextNode(str(e.label)))
+        return ci
+
+    def _print_Indexed(self,e):
+        apply = self.dom.createElement('apply')
+        apply.appendChild(self.dom.createElement('selector'))
+        if e.rank == 1:
+            ci = self.dom.createElement('ci') 
+            ci.setAttribute('type','vector')
+            ci.appendChild(self.dom.createTextNode(str(e.base)))
+            apply.appendChild(ci)
+            idx = self._print(e.indices[0])
+            apply.appendChild(idx)
+        return apply
 
     def _print_Matrix(self, m):
         x = self.dom.createElement('matrix')
@@ -230,12 +250,12 @@ class MathMLPrinter(Printer):
         return lime_recur(limits)
 
     def _print_Sum(self, e):
-        # Printer can be shared because Sum and Integral have the
-        # same internal representation.
         return self._print_Integral(e)
 
     def _print_Symbol(self, sym):
         ci = self.dom.createElement(self.mathml_tag(sym))
+        if isinstance(sym, Vector):
+            ci.setAttribute('type','vector')
 
         def join(items):
             if len(items) > 1:
@@ -255,6 +275,10 @@ class MathMLPrinter(Printer):
                 return mi
 
         name, supers, subs = split_super_sub(sym.name)
+        if name == 'beta':
+            name = u"\u03B2"
+        if name == 'Omega':
+            name = u"\u03A9"
         mname = self.dom.createElement('mml:mi')
         mname.appendChild(self.dom.createTextNode(name))
         if len(supers) == 0:
@@ -310,16 +334,26 @@ class MathMLPrinter(Printer):
         x.appendChild(self.dom.createElement(self.mathml_tag(e)))
 
         x_1 = self.dom.createElement('bvar')
-        for sym in e.variables:
+        for sym in e.symbols:
             x_1.appendChild(self._print(sym))
 
         x.appendChild(x_1)
         x.appendChild(self._print(e.expr))
         return x
 
+    def _print_abs(self, e):
+        x = self.dom.createElement("apply")
+        mname = self.dom.createElement("abs")
+        x.appendChild(mname)
+        for arg in e.args:
+            x.appendChild(self._print(arg))
+        return x
+
     def _print_Function(self, e):
         x = self.dom.createElement("apply")
-        x.appendChild(self.dom.createElement(self.mathml_tag(e)))
+        mname = self.dom.createElement(self.mathml_tag(e))
+        mname.appendChild(self.dom.createTextNode(str(e.func)))
+        x.appendChild(mname)
         for arg in e.args:
             x.appendChild(self._print(arg))
         return x

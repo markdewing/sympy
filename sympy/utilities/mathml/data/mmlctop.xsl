@@ -2693,7 +2693,7 @@ CONSTANT and SYMBOL ELEMENTS
     </xsl:apply-templates>
 	<xsl:if test="bvar">
       <mrow>
-        <mo> <xsl:text disable-output-escaping='yes'>&amp;#x2146;</xsl:text> </mo>
+        <mo> <xsl:text disable-output-escaping='yes'>&amp;#x1D451;</xsl:text> </mo>
         <xsl:apply-templates select="bvar" mode="semantics"/>
       </mrow>
     </xsl:if>
