@@ -40,13 +40,13 @@ def apply_xsl(mml, xsl):
 
     return s
 
-def c2p(mml, simple=False):
+def c2p(mml, simple=False, add_header=True):
     """Transforms a document in MathML content (like the one that sympy produces)
     in one document in MathML presentation, more suitable for printing, and more
     widely accepted
     """
 
-    if not mml.startswith('<math'):
+    if add_header and not mml.startswith('<math'):
         mml = add_mathml_headers(mml)
 
     if simple:
