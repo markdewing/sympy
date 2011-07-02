@@ -16,6 +16,8 @@ from sympy.core.cache import cacheit
 from sympy.core.symbol import Dummy
 from sympy.printing.str import StrPrinter
 
+from sympy.core.compatibility import reduce
+
 __all__ = [
     'Dagger',
     'KroneckerDelta',
@@ -229,8 +231,8 @@ class AntiSymmetricTensor(TensorSymbol):
 
         >>> from sympy import symbols
         >>> from sympy.physics.secondquant import AntiSymmetricTensor
-        >>> i, j = symbols('i j', below_fermi=True)
-        >>> a, b = symbols('a b', above_fermi=True)
+        >>> i, j = symbols('i,j', below_fermi=True)
+        >>> a, b = symbols('a,b', above_fermi=True)
         >>> AntiSymmetricTensor('v', (a, i), (b, j))
         AntiSymmetricTensor(v, Tuple(a, i), Tuple(b, j))
         >>> AntiSymmetricTensor('v', (a, i), (b, j)).symbol
@@ -248,8 +250,8 @@ class AntiSymmetricTensor(TensorSymbol):
 
         >>> from sympy import symbols
         >>> from sympy.physics.secondquant import AntiSymmetricTensor
-        >>> i, j = symbols('i j', below_fermi=True)
-        >>> a, b = symbols('a b', above_fermi=True)
+        >>> i, j = symbols('i,j', below_fermi=True)
+        >>> a, b = symbols('a,b', above_fermi=True)
         >>> AntiSymmetricTensor('v', (a, i), (b, j))
         AntiSymmetricTensor(v, Tuple(a, i), Tuple(b, j))
         >>> AntiSymmetricTensor('v', (a, i), (b, j)).upper
@@ -268,8 +270,8 @@ class AntiSymmetricTensor(TensorSymbol):
 
         >>> from sympy import symbols
         >>> from sympy.physics.secondquant import AntiSymmetricTensor
-        >>> i, j = symbols('i j', below_fermi=True)
-        >>> a, b = symbols('a b', above_fermi=True)
+        >>> i, j = symbols('i,j', below_fermi=True)
+        >>> a, b = symbols('a,b', above_fermi=True)
         >>> AntiSymmetricTensor('v', (a, i), (b, j))
         AntiSymmetricTensor(v, Tuple(a, i), Tuple(b, j))
         >>> AntiSymmetricTensor('v', (a, i), (b, j)).lower
@@ -291,7 +293,7 @@ class KroneckerDelta(Function):
 
     >>> from sympy import symbols
     >>> from sympy.physics.secondquant import KroneckerDelta
-    >>> i, j, k = symbols('i j k')
+    >>> i, j, k = symbols('i,j,k')
     >>> KroneckerDelta(i, j)
     KroneckerDelta(i, j)
     >>> KroneckerDelta(i, i)
@@ -299,7 +301,7 @@ class KroneckerDelta(Function):
     >>> KroneckerDelta(i, i+1)
     0
     >>> KroneckerDelta(i, i+1+k)
-    KroneckerDelta(i, 1 + i + k)
+    KroneckerDelta(i, i + k + 1)
 
     """
 
@@ -313,7 +315,7 @@ class KroneckerDelta(Function):
 
         >>> from sympy import symbols
         >>> from sympy.physics.secondquant import KroneckerDelta
-        >>> i, j, k = symbols('i j k')
+        >>> i, j, k = symbols('i,j,k')
         >>> KroneckerDelta(i, j)
         KroneckerDelta(i, j)
         >>> KroneckerDelta(i, i)
@@ -321,7 +323,7 @@ class KroneckerDelta(Function):
         >>> KroneckerDelta(i, i+1)
         0
         >>> KroneckerDelta(i, i+1+k)
-        KroneckerDelta(i, 1 + i + k)
+        KroneckerDelta(i, i + k + 1)
 
         # indirect doctest
 
@@ -1107,8 +1109,8 @@ class FockState(Expr):
           Element 0 is the state that was occupied first, element i
           is the i'th occupied state.
         """
-        o = map(sympify, occupations)
-        obj = Basic.__new__(cls, tuple(o), commutative=False)
+        occupations = map(sympify, occupations)
+        obj = Basic.__new__(cls, Tuple(*occupations), commutative=False)
         return obj
 
     def _eval_subs(self, old, new):
@@ -1212,7 +1214,7 @@ class FermionState(FockState):
         >>> p = Symbol('p')
 
         >>> FKet([]).up(a)
-        FockStateFermionKet((a,))
+        FockStateFermionKet(Tuple(a))
 
         A creator acting on vacuum below fermi vanishes
         >>> FKet([]).up(i)
@@ -1264,7 +1266,7 @@ class FermionState(FockState):
         >>> FKet([]).down(i)
         0
         >>> FKet([],4).down(i)
-        FockStateFermionKet((i,))
+        FockStateFermionKet(Tuple(i))
 
         """
         present = i in self.args[0]
@@ -1685,7 +1687,7 @@ class Commutator(Function):
 
     >>> from sympy import symbols
     >>> from sympy.physics.secondquant import Commutator
-    >>> A, B = symbols('A B', commutative=False)
+    >>> A, B = symbols('A,B', commutative=False)
     >>> Commutator(B, A)
     -Commutator(A, B)
 
@@ -1703,7 +1705,7 @@ class Commutator(Function):
     >>> from sympy.physics.secondquant import Fd, F
     >>> a = symbols('a',above_fermi=True)
     >>> i = symbols('i',below_fermi=True)
-    >>> p,q = symbols('pq')
+    >>> p,q = symbols('p,q')
 
     >>> Commutator(Fd(a),Fd(i))
     2*NO(CreateFermion(a)*CreateFermion(i))
@@ -1714,7 +1716,7 @@ class Commutator(Function):
     >>> comm = Commutator(Fd(p)*Fd(q),F(i)); comm
     Commutator(CreateFermion(p)*CreateFermion(q), AnnihilateFermion(i))
     >>> comm.doit(wicks=True)
-    KroneckerDelta(i, q)*CreateFermion(p) - KroneckerDelta(i, p)*CreateFermion(q)
+    -KroneckerDelta(i, p)*CreateFermion(q) + KroneckerDelta(i, q)*CreateFermion(p)
 
     """
 
@@ -1822,7 +1824,7 @@ class NO(Expr):
 
     >>> from sympy import symbols
     >>> from sympy.physics.secondquant import NO, F, Fd
-    >>> p,q = symbols('pq')
+    >>> p,q = symbols('p,q')
     >>> NO(Fd(p)*F(q))
     NO(CreateFermion(p)*AnnihilateFermion(q))
     >>> NO(F(q)*Fd(p))
@@ -2046,9 +2048,9 @@ class NO(Expr):
         Iterates over the annihilation operators.
 
         >>> from sympy import symbols, Dummy
-        >>> i,j,k,l = symbols('ijkl',below_fermi=True)
+        >>> i,j,k,l = symbols('i j k l', below_fermi=True)
         >>> p,q,r,s = symbols('p q r s', cls=Dummy)
-        >>> a,b,c,d = symbols('abcd',above_fermi=True)
+        >>> a,b,c,d = symbols('a b c d', above_fermi=True)
         >>> from sympy.physics.secondquant import NO, F, Fd
         >>> no = NO(Fd(a)*F(i)*Fd(j)*F(b))
 
@@ -2073,9 +2075,9 @@ class NO(Expr):
         Iterates over the creation operators.
 
         >>> from sympy import symbols, Dummy
-        >>> i,j,k,l = symbols('ijkl',below_fermi=True)
+        >>> i,j,k,l = symbols('i j k l',below_fermi=True)
         >>> p,q,r,s = symbols('p q r s', cls=Dummy)
-        >>> a,b,c,d = symbols('abcd',above_fermi=True)
+        >>> a,b,c,d = symbols('a b c d',above_fermi=True)
         >>> from sympy.physics.secondquant import NO, F, Fd
         >>> no = NO(Fd(a)*F(i)*Fd(j)*F(b))
 
@@ -2102,7 +2104,7 @@ class NO(Expr):
 
         >>> from sympy import symbols
         >>> from sympy.physics.secondquant import F, NO
-        >>> p,q,r = symbols('pqr')
+        >>> p,q,r = symbols('p,q,r')
 
         >>> NO(F(p)*F(q)*F(r)).get_subNO(1)  # doctest: +SKIP
         NO(AnnihilateFermion(p)*AnnihilateFermion(r))
@@ -2130,9 +2132,9 @@ def contraction(a,b):
 
     >>> from sympy import symbols
     >>> from sympy.physics.secondquant import F, Fd, contraction
-    >>> p,q = symbols('pq')
-    >>> a,b = symbols('ab',above_fermi=True)
-    >>> i,j = symbols('ij',below_fermi=True)
+    >>> p,q = symbols('p,q')
+    >>> a,b = symbols('a,b', above_fermi=True)
+    >>> i,j = symbols('i,j', below_fermi=True)
 
     A contraction is non-zero only if a quasi-creator is to the right of a
     quasi-annihilator:
@@ -2269,8 +2271,8 @@ def evaluate_deltas(e):
 
     >>> from sympy import symbols, Function, Dummy
     >>> from sympy.physics.secondquant import evaluate_deltas, KroneckerDelta
-    >>> i,j = symbols('i j',below_fermi=True, cls=Dummy)
-    >>> a,b = symbols('a b',above_fermi=True, cls=Dummy)
+    >>> i,j = symbols('i j', below_fermi=True, cls=Dummy)
+    >>> a,b = symbols('a b', above_fermi=True, cls=Dummy)
     >>> p,q = symbols('p q', cls=Dummy)
     >>> f = Function('f')
     >>> t = Function('t')
@@ -2304,9 +2306,9 @@ def evaluate_deltas(e):
     imply a loss of information:
 
     >>> evaluate_deltas(KroneckerDelta(i,p)*f(q))
-    KroneckerDelta(_i, _p)*f(_q)
+    f(_q)*KroneckerDelta(_i, _p)
     >>> evaluate_deltas(KroneckerDelta(i,p)*f(i))
-    KroneckerDelta(_i, _p)*f(_i)
+    f(_i)*KroneckerDelta(_i, _p)
     """
 
 
@@ -2317,8 +2319,8 @@ def evaluate_deltas(e):
     accepted_functions = (
             Add,
             )
-    if isinstance(e,accepted_functions):
-        return e.new(*[evaluate_deltas(arg) for arg in e.args])
+    if isinstance(e, accepted_functions):
+        return e.func(*[evaluate_deltas(arg) for arg in e.args])
 
     elif isinstance(e,Mul):
         # find all occurences of delta function and count each index present in
@@ -2370,8 +2372,8 @@ def substitute_dummies(expr, new_indices=False, pretty_indices={}):
 
     >>> from sympy import symbols, Function, Dummy
     >>> from sympy.physics.secondquant import substitute_dummies
-    >>> a,b,c,d = symbols('a b c d',cls=Dummy, above_fermi=True)
-    >>> i,j = symbols('i j',cls=Dummy, below_fermi=True)
+    >>> a,b,c,d = symbols('a b c d', above_fermi=True, cls=Dummy)
+    >>> i,j = symbols('i j', below_fermi=True, cls=Dummy)
     >>> f = Function('f')
 
     >>> expr = f(a,b) + f(c,d); expr
@@ -2812,7 +2814,7 @@ def wicks(e, **kw_args):
 
     >>> from sympy import symbols, Function, Dummy
     >>> from sympy.physics.secondquant import wicks, F, Fd, NO
-    >>> p,q,r = symbols('pqr')
+    >>> p,q,r = symbols('p,q,r')
     >>> wicks(Fd(p)*F(q))  # doctest: +SKIP
     KroneckerDelta(p, q)*KroneckerDelta(q, _i) + NO(CreateFermion(p)*AnnihilateFermion(q))
 
@@ -2940,7 +2942,7 @@ class PermutationOperator(Expr):
 
         >>> from sympy import symbols, Function
         >>> from sympy.physics.secondquant import PermutationOperator
-        >>> p,q = symbols('pq')
+        >>> p,q = symbols('p,q')
         >>> f = Function('f')
         >>> PermutationOperator(p,q).get_permuted(f(p,q))
         -f(q, p)
@@ -2978,19 +2980,19 @@ def simplify_index_permutations(expr, permutation_operators):
     >>> from sympy import symbols, Function
     >>> from sympy.physics.secondquant import simplify_index_permutations
     >>> from sympy.physics.secondquant import PermutationOperator
-    >>> p,q,r,s = symbols('pqrs')
+    >>> p,q,r,s = symbols('p,q,r,s')
     >>> f = Function('f')
     >>> g = Function('g')
 
     >>> expr = f(p)*g(q) - f(q)*g(p); expr
     f(p)*g(q) - f(q)*g(p)
     >>> simplify_index_permutations(expr,[PermutationOperator(p,q)])
-    PermutationOperator(p, q)*f(p)*g(q)
+    f(p)*g(q)*PermutationOperator(p, q)
 
     >>> PermutList = [PermutationOperator(p,q),PermutationOperator(r,s)]
     >>> expr = f(p,r)*g(q,s) - f(q,r)*g(p,s) + f(q,s)*g(p,r) - f(p,s)*g(q,r)
     >>> simplify_index_permutations(expr,PermutList)
-    PermutationOperator(p, q)*PermutationOperator(r, s)*f(p, r)*g(q, s)
+    f(p, r)*g(q, s)*PermutationOperator(p, q)*PermutationOperator(r, s)
 
     """
 

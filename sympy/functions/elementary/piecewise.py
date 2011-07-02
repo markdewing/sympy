@@ -25,6 +25,10 @@ class ExprCondPair(Function):
         return self.args[1]
 
     @property
+    def is_commutative(self):
+        return self.expr.is_commutative
+
+    @property
     def free_symbols(self):
         # Overload Basic.free_symbols because self.args[1] may contain non-Basic
         result = self.expr.free_symbols
@@ -76,9 +80,9 @@ class Piecewise(Function):
             cond_type = type(pair.cond)
             if not (cond_type is bool or issubclass(cond_type, Relational) or \
                     issubclass(cond_type, Number) or issubclass(cond_type, Set)):
-                raise TypeError, \
+                raise TypeError(
                     "Cond %s is of type %s, but must be a bool," \
-                    " Relational, Number or Set" % (pair.cond, cond_type)
+                    " Relational, Number or Set" % (pair.cond, cond_type))
             newargs.append(pair)
 
         r = cls.eval(*newargs)
@@ -98,7 +102,7 @@ class Piecewise(Function):
     @classmethod
     def eval(cls, *args):
         # Check for situations where we can evaluate the Piecewise object.
-        # 1) Hit an unevaluatable cond (e.g. x<1) -> keep object
+        # 1) Hit an unevaluable cond (e.g. x<1) -> keep object
         # 2) Hit a true condition -> return that expr
         # 3) Remove false conditions, if no conditions left -> raise ValueError
         all_conds_evaled = True    # Do all conds eval to a bool?
@@ -131,15 +135,6 @@ class Piecewise(Function):
         if len(non_false_ecpairs) != len(args) or piecewise_again:
             return Piecewise(*non_false_ecpairs)
 
-        # Count number of arguments.
-        nargs = 0
-        for expr, cond in args:
-            if hasattr(expr, 'nargs'):
-                nargs = max(nargs, expr.nargs)
-            elif hasattr(expr, 'args'):
-                nargs = max(nargs, len(expr.args))
-        if nargs:
-            cls.narg = nargs
         return None
 
     def doit(self, **hints):
@@ -250,6 +245,11 @@ class Piecewise(Function):
                 new_args.append((e._eval_subs(old, new), c._eval_subs(old, new)))
         return Piecewise( *new_args )
 
+    def _eval_nseries(self, x, n, logx):
+        args = map(lambda ec: (ec.expr._eval_nseries(x, n, logx), ec.cond), \
+                   self.args)
+        return self.func(*args)
+
     @classmethod
     def __eval_cond(cls, cond):
         """Returns S.One if True, S.Zero if False, or None if undecidable."""
@@ -290,3 +290,4 @@ def piecewise_fold(expr):
         if len(piecewise_args) > 1:
             return piecewise_fold(Piecewise(*new_args))
     return Piecewise(*new_args)
+

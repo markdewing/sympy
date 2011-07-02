@@ -121,20 +121,39 @@ def test(*paths, **kwargs):
 
     Examples:
 
-    >> from sympy.utilities.runtests import test
+    >> import sympy
 
     Run all tests:
-    >> test()
+    >> sympy.test()
 
     Run one file:
-    >> test("sympy/core/tests/test_basic.py")
-    >> test("_basic")
+    >> sympy.test("sympy/core/tests/test_basic.py")
+    >> sympy.test("_basic")
 
     Run all tests in sympy/functions/ and some particular file:
-    >> test("sympy/core/tests/test_basic.py", "sympy/functions")
+    >> sympy.test("sympy/core/tests/test_basic.py", "sympy/functions")
 
     Run all tests in sympy/core and sympy/utilities:
-    >> test("/core", "/util")
+    >> sympy.test("/core", "/util")
+
+    Run specific test from a file:
+    >> sympy.test("sympy/core/tests/test_basic.py", kw="test_equality")
+
+    Run the tests with verbose mode on:
+    >> sympy.test(verbose=True)
+
+    Don't sort the test output:
+    >> sympy.test(sort=False)
+
+    Turn on post-mortem pdb:
+    >> sympy.test(pdb=True)
+
+    Turn off colors:
+    >> sympy.test(colors=False)
+
+    The traceback verboseness can be set to "short" or "no" (default is "short")
+    >> sympy.test(tb='no')
+
     """
     verbose = kwargs.get("verbose", False)
     tb = kwargs.get("tb", "short")
@@ -144,6 +163,11 @@ def test(*paths, **kwargs):
     sort = kwargs.get("sort", True)
     r = PyTestReporter(verbose, tb, colors)
     t = SymPyTests(r, kw, post_mortem)
+
+    # Disable warnings for external modules
+    import sympy.external
+    sympy.external.importtools.WARN_OLD_VERSION = False
+    sympy.external.importtools.WARN_NOT_INSTALLED = False
 
     test_files = t.get_test_files('sympy')
     if len(paths) == 0:
@@ -174,21 +198,21 @@ def doctest(*paths, **kwargs):
 
     Examples:
 
-    >> froms sympy.utilities.runtests import doctest
+    >> import sympy
 
     Run all tests:
-    >> doctest()
+    >> sympy.doctest()
 
     Run one file:
-    >> doctest("sympy/core/basic.py")
-    >> doctest("polynomial.txt")
+    >> sympy.doctest("sympy/core/basic.py")
+    >> sympy.doctest("polynomial.txt")
 
     Run all tests in sympy/functions/ and some particular file:
-    >> doctest("/functions", "basic.py")
+    >> sympy.doctest("/functions", "basic.py")
 
     Run any file having polynomial in its name, doc/src/modules/polynomial.txt,
     sympy\functions\special\polynomials.py, and sympy\polys\polynomial.py:
-    >> doctest("polynomial")
+    >> sympy.doctest("polynomial")
     """
     normal = kwargs.get("normal", False)
     verbose = kwargs.get("verbose", False)
@@ -205,9 +229,13 @@ def doctest(*paths, **kwargs):
                     "sympy/galgebra/latex_ex.py", # needs numpy
                     "sympy/conftest.py", # needs py.test
                     "sympy/utilities/benchmarking.py", # needs py.test
-                    "doc/src/modules/polys", # very time consuming
                     ])
     blacklist = convert_to_native_paths(blacklist)
+
+    # Disable warnings for external modules
+    import sympy.external
+    sympy.external.importtools.WARN_OLD_VERSION = False
+    sympy.external.importtools.WARN_NOT_INSTALLED = False
 
     r = PyTestReporter(verbose)
     t = SymPyDocTests(r, normal)
@@ -275,9 +303,10 @@ def doctest(*paths, **kwargs):
                 continue
             old_displayhook = sys.displayhook
             try:
-                out = sympytestfile(txt_file, module_relative=False,
-                        optionflags=pdoctest.ELLIPSIS | \
-                        pdoctest.NORMALIZE_WHITESPACE)
+                # out = pdoctest.testfile(txt_file, module_relative=False, encoding='utf-8',
+                #    optionflags=pdoctest.ELLIPSIS | pdoctest.NORMALIZE_WHITESPACE)
+                out = sympytestfile(txt_file, module_relative=False, encoding='utf-8',
+                    optionflags=pdoctest.ELLIPSIS | pdoctest.NORMALIZE_WHITESPACE)
             finally:
                 # make sure we return to the original displayhook in case some
                 # doctest has changed that
@@ -531,7 +560,7 @@ class SymPyTests(object):
                     if self._post_mortem:
                         pdb.post_mortem(tr)
                 elif t.__name__ == "Skipped":
-                    self._reporter.test_skip()
+                    self._reporter.test_skip(v)
                 elif t.__name__ == "XFail":
                     self._reporter.test_xfail()
                 elif t.__name__ == "XPass":
@@ -1029,7 +1058,11 @@ class PyTestReporter(Reporter):
         executable = sys.executable
         v = tuple(sys.version_info)
         python_version = "%s.%s.%s-%s-%s" % v
-        self.write("executable:   %s  (%s)\n\n" % (executable, python_version))
+        self.write("executable:   %s  (%s)\n" % (executable, python_version))
+        from .misc import ARCH
+        self.write("architecture: %s\n" % ARCH)
+        from sympy.polys.domains import GROUND_TYPES
+        self.write("ground types: %s\n\n" % GROUND_TYPES)
         self._t_start = clock()
 
     def finish(self):
@@ -1156,9 +1189,12 @@ class PyTestReporter(Reporter):
         else:
             self.write(".", "Green")
 
-    def test_skip(self):
+    def test_skip(self, v):
         self._skipped += 1
         self.write("s", "Green")
+        if self._verbose:
+            self.write(" - ", "Green")
+            self.write(v.message, "Green")
 
     def test_exception(self, exc_info):
         self._exceptions.append((self._active_file, self._active_f, exc_info))

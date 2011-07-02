@@ -395,7 +395,7 @@ def matrix_to_qubit(matrix):
         if element != 0.0:
             # Form Qubit array; 0 in bit-locations where i is 0, 1 in
             # bit-locations where i is 1
-            qubit_array = [1 if i&(1<<x) else 0 for x in range(nqubits)]
+            qubit_array = [int(i & (1<<x) != 0) for x in range(nqubits)]
             qubit_array.reverse()
             result = result + element*cls(*qubit_array)
 
@@ -412,7 +412,6 @@ def qubit_to_matrix(qubit, format='sympy'):
     This function is the inverse of ``matrix_to_qubit`` and is a shorthand
     for ``represent(qubit)``.
     """
-    from sympy.physics.quantum.gate import Z
     return represent(qubit, format=format)
 
 
@@ -421,7 +420,7 @@ def qubit_to_matrix(qubit, format='sympy'):
 #-----------------------------------------------------------------------------
 
 
-def measure_all(qubit, format='sympy'):
+def measure_all(qubit, format='sympy', normalize=True):
     """Perform an ensemble measurement of all qubits.
 
     Parameters
@@ -457,7 +456,10 @@ def measure_all(qubit, format='sympy'):
 
     if format == 'sympy':
         results = []
-        m = m.normalized()
+
+        if normalize:
+            m = m.normalized()
+
         size = max(m.shape) # Max of shape to account for bra or ket
         nqubits = int(math.log(size)/math.log(2))
         for i in range(size):
@@ -472,7 +474,7 @@ def measure_all(qubit, format='sympy'):
         )
 
 
-def measure_partial(qubit, bits, format='sympy'):
+def measure_partial(qubit, bits, format='sympy', normalize=True):
     """Perform a partial ensemble measure on the specifed qubits.
 
     Parameters
@@ -512,7 +514,9 @@ def measure_partial(qubit, bits, format='sympy'):
         bits = (int(bits),)
 
     if format == 'sympy':
-        m = m.normalized()
+        if normalize:
+            m = m.normalized()
+
         possible_outcomes = _get_possible_outcomes(m, bits)
 
         # Form output from function.
@@ -526,8 +530,13 @@ def measure_partial(qubit, bits, format='sympy'):
             # If the output has a chance, append it to output with found
             # probability.
             if prob_of_outcome != 0:
+                if normalize:
+                    next_matrix = matrix_to_qubit(outcome.normalized())
+                else:
+                    next_matrix = matrix_to_qubit(outcome)
+
                 output.append((
-                    matrix_to_qubit(outcome.normalized()),
+                    next_matrix,
                     prob_of_outcome
                 ))
 

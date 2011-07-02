@@ -79,34 +79,40 @@ def limit(e, z, z0, dir="+"):
 
     if e.is_Pow:
         b, ex = e.args
-        c = None # records sign of b if b is +/-z
+        c = None # records sign of b if b is +/-z or has a bounded value
         if b.is_Mul:
             c, b = b.as_two_terms()
             if c is S.NegativeOne and b == z:
                 c = '-'
         elif b == z:
             c = '+'
-        if c and ex.is_number:
-            if z0 == 0 and ex < 0:
-                if dir != c:
-                    # integer
-                    if ex.is_even:
-                        return S.Infinity
-                    elif ex.is_odd:
-                        return S.NegativeInfinity
-                    # rational
-                    elif ex.is_Rational:
-                        return (S.NegativeOne**ex)*S.Infinity
-                    else:
-                        return S.ComplexInfinity
-                return S.Infinity
-            return z0**ex
+
+        if ex.is_number:
+            if c is None:
+                base = b.subs(z, z0)
+                if base.is_bounded and (ex.is_bounded or base is not S.One):
+                    return base**ex
+            else:
+                if z0 == 0 and ex < 0:
+                    if dir != c:
+                        # integer
+                        if ex.is_even:
+                            return S.Infinity
+                        elif ex.is_odd:
+                            return S.NegativeInfinity
+                        # rational
+                        elif ex.is_Rational:
+                            return (S.NegativeOne**ex)*S.Infinity
+                        else:
+                            return S.ComplexInfinity
+                    return S.Infinity
+                return z0**ex
 
     if e.is_Mul or not z0 and e.is_Pow and b.func is log:
         if e.is_Mul:
             # weed out the z-independent terms
             i, d = e.as_independent(z)
-            if i is not S.One:
+            if i is not S.One and i.is_bounded:
                 return i*limit(d, z, z0, dir)
         else:
             i, d = S.One, e
@@ -139,7 +145,7 @@ def limit(e, z, z0, dir="+"):
         finite = []; unknown = []
         ok = True
         for term in e.args:
-            if not term.has(z):
+            if not term.has(z) and not term.is_unbounded:
                 finite.append(term)
                 continue
             result = term.subs(z, z0)
@@ -184,6 +190,8 @@ def limit(e, z, z0, dir="+"):
 
     try:
         r = gruntz(e, z, z0, dir)
+        if r is S.NaN:
+            raise PoleError()
     except PoleError:
         r = heuristics(e, z, z0, dir)
     return r

@@ -1,6 +1,6 @@
 from sympy import sin, cos, exp, E, series, oo, S, Derivative, O, Integral, \
                   Function, log, sqrt, Symbol
-from sympy.abc import x, y
+from sympy.abc import x, y, n, k
 from sympy.utilities.pytest import raises
 
 def test_sin():
@@ -34,13 +34,13 @@ def test_2124():
     assert (cos(x).series(x, 1).removeO().subs(x, x - 1) -
             cos(x + 1).series(x).removeO().subs(x, x - 1)).expand() == 0
     e = cos(x).series(x, 1, n=None)
-    assert [e.next() for i in range(2)] == [cos(1), (1 - x)*sin(1)]
+    assert [e.next() for i in range(2)] == [cos(1), -((x - 1)*sin(1))]
     e = cos(x).series(x, 1, n=None, dir='-')
     assert [e.next() for i in range(2)] == [cos(1), (1 - x)*sin(1)]
     # the following test is exact so no need for x -> x - 1 replacement
     assert abs(x).series(x, 1, dir='-') == x
     assert exp(x).series(x, 1, dir='-', n=3).removeO().subs(x, x - 1) == \
-           E - E*(1 - x) + E*(1 - x)**2/2
+           E + E*(x - 1) + E*(x - 1)**2/2
 
     D = Derivative
     assert D(x**2 + x**3*y**2, x, 2, y, 1).series(x).doit() == 12*x*y
@@ -53,7 +53,9 @@ def test_2124():
     assert (1 + x).getn() == None
 
     assert ((1/sin(x))**oo).series() == oo
-    assert ((sin(x))**y).series(x) == 0**y
+    logx = Symbol('logx')
+    assert ((sin(x))**y).nseries(x, n=1, logx = logx) \
+           == exp(y*logx) + O(x*exp(y*logx), x)
 
     raises(NotImplementedError, 'series(Function("f")(x))')
 
@@ -71,3 +73,14 @@ def test_2124():
         1 + p**S('3/2')*log(p) + O(p**3*log(p)**3)
 
     assert exp(sin(x)*log(x)).series(n=2) == 1 + x*log(x) + O(x**2*log(x)**2)
+
+from sympy.series.acceleration import richardson, shanks
+from sympy import Sum, Integer
+
+def test_acceleration():
+    e = (1 + 1/n)**n
+    assert round(richardson(e, n, 10, 20).evalf(), 10) == round(E.evalf(), 10)
+
+    A = Sum(Integer(-1)**(k+1) / k, (k, 1, n))
+    assert round(shanks(A, n, 25).evalf(), 4) == round(log(2).evalf(), 4)
+    assert round(shanks(A, n, 25, 5).evalf(), 10) == round(log(2).evalf(), 10)

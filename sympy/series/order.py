@@ -1,27 +1,7 @@
 from sympy.core import Basic, S, C, sympify, Expr, oo, Rational, Symbol, Dummy
 from sympy.core import Add, Mul
 from sympy.core.cache import cacheit
-
-def solve4linearsymbol(eqn, rhs, symbols = None):
-    """
-    Solve equation "eqn == rhs" with respect to some linear symbol in eqn.
-
-    Returns (symbol, solution). If eqn is nonlinear with respect to all
-    symbols, then return trivial solution (eqn, rhs).
-    """
-    if eqn.is_Symbol:
-        return (eqn, rhs)
-    if symbols is None:
-        symbols = eqn.atoms(Symbol)
-    if symbols:
-        # find  symbol
-        for s in symbols:
-            deqn = eqn.diff(s)
-            if deqn.diff(s) is S.Zero:
-                # eqn = a + b*c, a=eqn(c=0),b=deqn(c=0)
-                return s, (rhs - eqn.subs(s,0))/deqn.subs(s,0)
-    # no linear symbol, return trivial solution
-    return eqn, rhs
+from sympy.core.compatibility import all
 
 class Order(Expr):
     """
@@ -77,24 +57,29 @@ class Order(Expr):
     Properties:
     ===========
 
-      g(x) = O(f(x)) as x->0  <->  |g(x)|<=M|f(x)| near x=0  <->  lim_{x->0}  |g(x)/f(x)|  < oo
+      g(x) = O(f(x)) as x->0  <->  |g(x)| <= M|f(x)| near x=0
+                              <->  lim_{x->0}  |g(x)/f(x)| < oo
 
-      g(x,y) = O(f(x,y))  <->  lim_{x,y->0}  |g(x,y)/f(x,y)|  < oo, we'll assume that limits commute.
+      g(x,y) = O(f(x,y))  <->  lim_{x,y->0}  |g(x,y)/f(x,y)|  < oo;
+                               it is assumed that limits commute.
 
     Notes:
     ======
 
-      In O(f(x),x) the expression f(x) is assumed to have a leading term.
-      O(f(x),x) is automatically transformed to O(f(x).as_leading_term(x),x).
-      O(expr*f(x),x) is O(f(x),x)
-      O(expr,x) is O(1)
-      O(0, x) is 0.
+    In O(f(x), x) the expression f(x) is assumed to have a leading term.
+    O(f(x), x) is automatically transformed to O(f(x).as_leading_term(x),x).
 
-      Multivariate O is also supported:
-        O(f(x,y),x,y) is transformed to O(f(x,y).as_leading_term(x,y).as_leading_term(y), x, y)
+        O(expr*f(x), x) is O(f(x), x)
+        O(expr, x) is O(1)
+        O(0, x) is 0.
 
-      If O is used with only expression argument then the symbols are
-      all symbols in the expression.
+    Multivariate O is also supported:
+
+        O(f(x, y), x, y) is transformed to
+        O(f(x, y).as_leading_term(x,y).as_leading_term(y), x, y)
+
+    If no symbols are passed then all symbols in the expression are used:
+
     """
 
     is_Order = True
@@ -103,16 +88,17 @@ class Order(Expr):
 
     @cacheit
     def __new__(cls, expr, *symbols, **assumptions):
+
         expr = sympify(expr).expand()
         if expr is S.NaN:
             return S.NaN
 
         if symbols:
             symbols = map(sympify, symbols)
+            if not all(isinstance(s, Symbol) for s in symbols):
+                raise NotImplementedError('Order at points other than 0 not supported.')
         else:
             symbols = list(expr.free_symbols)
-
-        symbols.sort(Basic.compare)
 
         if expr.is_Order:
 
@@ -120,64 +106,44 @@ class Order(Expr):
             for s in symbols:
                 if s not in new_symbols:
                     new_symbols.append(s)
-            if len(new_symbols)==len(expr.variables):
+            if len(new_symbols) == len(expr.variables):
                 return expr
             symbols = new_symbols
 
         elif symbols:
 
-            symbol_map = {}
-            new_symbols = []
-            for s in symbols:
-                if isinstance(s, Symbol):
-                    new_symbols.append(s)
-                    continue
-                z = Dummy('z')
-                x1,s1 = solve4linearsymbol(s, z)
-                expr = expr.subs(x1,s1)
-                symbol_map[z] = s
-                new_symbols.append(z)
-
-            if symbol_map:
-                r = Order(expr, *new_symbols, **assumptions)
-                expr = r.expr.subs(symbol_map)
-                symbols = []
-                for s in r.variables:
-                    if symbol_map.has_key(s):
-                        symbols.append(symbol_map[s])
-                    else:
-                        symbols.append(s)
-            else:
-                if expr.is_Add:
-                    lst = expr.extract_leading_order(*symbols)
-                    expr = Add(*[f.expr for (e,f) in lst])
-                else:
+            if expr.is_Add:
+                lst = expr.extract_leading_order(*symbols)
+                expr = Add(*[f.expr for (e,f) in lst])
+            elif expr:
+                if len(symbols) > 1:
+                    # TODO
+                    # We cannot use compute_leading_term because that only
+                    # works in one symbol.
                     expr = expr.as_leading_term(*symbols)
-                    coeff, terms = expr.as_coeff_mul()
-                    if coeff is S.Zero:
-                        return coeff
-                    expr = Mul(*[t for t in terms if t.has(*symbols)])
-
-        elif expr is not S.Zero:
-            expr = S.One
+                else:
+                    expr = expr.compute_leading_term(symbols[0])
+                coeff, terms = expr.as_coeff_mul()
+                expr = Mul(*[t for t in terms if t.has(*symbols)])
 
         if expr is S.Zero:
             return expr
+        elif not expr.has(*symbols):
+            expr = S.One
 
         # create Order instance:
+        symbols.sort(Basic.compare)
         obj = Expr.__new__(cls, expr, *symbols, **assumptions)
 
         return obj
 
     def _hashable_content(self):
-        if self.args[0].is_number:
-            return (self.args[0],)
         return self.args
 
     def oseries(self, order):
         return self
 
-    def _eval_nseries(self, x, n):
+    def _eval_nseries(self, x, n, logx):
         return self
 
     @property
@@ -206,6 +172,13 @@ class Order(Expr):
                     order_symbols = order_symbols + (s,)
         return self.expr, order_symbols
 
+    def removeO(self):
+        return S.Zero
+
+    def getO(self):
+        return self
+
+
     @cacheit
     def contains(self, expr):
         """
@@ -214,6 +187,19 @@ class Order(Expr):
         Return None if the inclusion relation cannot be determined
         (e.g. when self and expr have different symbols).
         """
+        # NOTE: when multiplying out series a lot of queries like
+        #       O(...).contains(a*x**b) with many a and few b are made.
+        #       Separating out the independent part allows for better caching.
+        c, m = expr.as_coeff_mul(*self.variables)
+        if m != ():
+            return self._contains(Mul(*m))
+        else:
+            # Mul(*m) == 1, and O(1) treatment is somewhat peculiar ...
+            # some day this else should not be necessary
+            return self._contains(expr)
+
+    @cacheit
+    def _contains(self, expr):
         from sympy import powsimp, limit
         if expr is S.Zero:
             return True

@@ -32,7 +32,6 @@ from distutils.core import Command
 import sys
 
 import sympy
-from sympy.utilities.runtests import test, doctest
 
 # Make sure I have the right Python version.
 if sys.version_info[:2] < (2,4):
@@ -40,14 +39,14 @@ if sys.version_info[:2] < (2,4):
           sys.version_info[:2]
     sys.exit(-1)
 
-# Check that this list is uptodate against the result of the command (you can
-# omit the thirdparty/ dir):
-# $ find * -name __init__.py |sort
+# Check that this list is uptodate against the result of the command:
+# $ for i in `find sympy -name __init__.py | rev | cut -f 2- -d '/' | rev | egrep -v "^sympy$|thirdparty/" `; do echo "'${i//\//.}',"; done | sort
 modules = [
     'sympy.assumptions',
     'sympy.assumptions.handlers',
     'sympy.concrete',
     'sympy.core',
+    'sympy.external',
     'sympy.functions',
     'sympy.functions.combinatorial',
     'sympy.functions.elementary',
@@ -56,28 +55,31 @@ modules = [
     'sympy.geometry',
     'sympy.integrals',
     'sympy.interactive',
-    'sympy.matrices',
-    'sympy.ntheory',
-    'sympy.parsing',
-    'sympy.physics',
-    'sympy.plotting',
-    'sympy.tensor',
-    'sympy.thirdparty',
     'sympy.logic',
     'sympy.logic.algorithms',
     'sympy.logic.utilities',
+    'sympy.matrices',
     'sympy.mpmath',
-    'sympy.mpmath.libmp',
-    'sympy.mpmath.functions',
-    'sympy.mpmath.matrices',
     'sympy.mpmath.calculus',
+    'sympy.mpmath.functions',
+    'sympy.mpmath.libmp',
+    'sympy.mpmath.matrices',
+    'sympy.mpmath.tests',
+    'sympy.ntheory',
+    'sympy.parsing',
+    'sympy.physics',
+    'sympy.physics.quantum',
+    'sympy.plotting',
     'sympy.polys',
+    'sympy.polys.domains',
     'sympy.printing',
     'sympy.printing.pretty',
     'sympy.series',
     'sympy.simplify',
     'sympy.solvers',
     'sympy.statistics',
+    'sympy.tensor',
+    'sympy.thirdparty',
     'sympy.utilities',
     'sympy.utilities.mathml',
     ]
@@ -104,11 +106,13 @@ class audit(Command):
         except:
             print """In order to run the audit, you need to have PyFlakes installed."""
             sys.exit(-1)
-        dirs = [os.path.join(*i.split('.')) for i in modules]
+        # We don't want to audit external dependencies
+        ext = ('mpmath',)
+        dirs = (os.path.join(*d) for d in \
+                        (m.split('.') for m in modules) if d[1] not in ext)
         warns = 0
         for dir in dirs:
-            filenames = os.listdir(dir)
-            for filename in filenames:
+            for filename in os.listdir(dir):
                 if filename.endswith('.py') and filename != '__init__.py':
                     warns += flakes.checkPath(os.path.join(dir, filename))
         if warns > 0:
@@ -156,10 +160,10 @@ class test_sympy(Command):
         pass
 
     def run(self):
-        if test():
+        if sympy.test():
             # all regular tests run successfuly, so let's also run doctests
             # (if some regular test fails, the doctests are not run)
-            doctest()
+            sympy.doctest()
 
 
 class run_benchmarks(Command):
@@ -196,6 +200,7 @@ tests = [
     'sympy.assumptions.tests',
     'sympy.concrete.tests',
     'sympy.core.tests',
+    'sympy.external.tests',
     'sympy.functions.combinatorial.tests',
     'sympy.functions.elementary.tests',
     'sympy.functions.special.tests',
@@ -207,6 +212,7 @@ tests = [
     'sympy.mpmath.tests',
     'sympy.ntheory.tests',
     'sympy.parsing.tests',
+    'sympy.physics.quantum.tests',
     'sympy.physics.tests',
     'sympy.plotting.tests',
     'sympy.polys.tests',
@@ -217,34 +223,9 @@ tests = [
     'sympy.slow_tests',
     'sympy.solvers.tests',
     'sympy.statistics.tests',
-    'sympy.test_external',
+    'sympy.tensor.tests',
     'sympy.utilities.tests',
     ]
-
-# update the following list from:
-# http://pyglet.googlecode.com/svn/trunk/setup.py
-# (whenever we update pyglet in sympy)
-# try ./setup.py sdist to see if it works
-pyglet_packages=[
-        'pyglet',
-        'pyglet.app',
-        'pyglet.font',
-        'pyglet.gl',
-        'pyglet.graphics',
-        'pyglet.image',
-        'pyglet.image.codecs',
-        'pyglet.media',
-        'pyglet.media.drivers',
-        'pyglet.media.drivers.directsound',
-        'pyglet.media.drivers.openal',
-        'pyglet.text',
-        'pyglet.text.formats',
-        'pyglet.window',
-        'pyglet.window.carbon',
-        'pyglet.window.win32',
-        'pyglet.window.xlib',
-]
-pyglet_packages = ["sympy.thirdparty.pyglet." + s for s in pyglet_packages]
 
 setup(
       name = 'sympy',
@@ -254,7 +235,7 @@ setup(
       author_email = 'sympy@googlegroups.com',
       license = 'BSD',
       url = 'http://code.google.com/p/sympy',
-      packages = ['sympy'] + modules + tests + pyglet_packages,
+      packages = ['sympy'] + modules + tests,
       scripts = ['bin/isympy'],
       ext_modules = [],
       package_data = { 'sympy.utilities.mathml' : ['data/*.xsl'] },

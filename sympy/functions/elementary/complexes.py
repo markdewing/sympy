@@ -1,8 +1,9 @@
-from sympy.core import S, C, Function, Derivative
+from sympy.core import S, C
+from sympy.core.function import Function, Derivative, ArgumentIndexError
 from sympy.functions.elementary.miscellaneous import sqrt
 from sympy.functions.elementary.piecewise import Piecewise
 from sympy.core import Add, Mul
-from sympy.core.relational import Eq, Ne
+from sympy.core.relational import Eq
 from sympy.utilities.iterables import iff
 
 ###############################################################################
@@ -78,8 +79,6 @@ class re(Function):
         return self.args[0].as_real_imag()[0]
 
     def _eval_derivative(self, x):
-        if not self.has(x):
-            return S.Zero
         return re(Derivative(self.args[0], x, **{'evaluate': True}))
 
 class im(Function):
@@ -150,8 +149,6 @@ class im(Function):
         return self.args[0].as_real_imag()[1]
 
     def _eval_derivative(self, x):
-        if not self.has(x):
-            return S.Zero
         return im(Derivative(self.args[0], x, **{'evaluate': True}))
 
 ###############################################################################
@@ -190,6 +187,9 @@ class sign(Function):
             return iff(is_neg, S.NegativeOne, S.One) * cls(arg._new_rawargs(*unk))
 
     is_bounded = True
+
+    def _eval_derivative(self, x):
+        return S.Zero
 
     def _eval_conjugate(self):
         return self
@@ -277,9 +277,9 @@ class Abs(Function):
                 return self.args[0]**other
         return
 
-    def _eval_nseries(self, x, n):
+    def _eval_nseries(self, x, n, logx):
         direction = self.args[0].leadterm(x)[0]
-        s = self.args[0]._eval_nseries(x, n=n)
+        s = self.args[0]._eval_nseries(x, n=n, logx=logx)
         when = Eq(direction, 0)
         return Piecewise(
                          ((s.subs(direction, 0)), when),
@@ -291,8 +291,6 @@ class Abs(Function):
         return sage.abs_symbolic(self.args[0]._sage_())
 
     def _eval_derivative(self, x):
-        if not self.has(x):
-            return S.Zero
         if self.args[0].is_real:
             return Derivative(self.args[0], x, **{'evaluate': True}) * sign(self.args[0])
         return (re(self.args[0]) * re(Derivative(self.args[0], x,
@@ -319,8 +317,6 @@ class arg(Function):
 
     def _eval_derivative(self, t):
         x, y = re(self.args[0]), im(self.args[0])
-        if not self.has(t):
-            return S.Zero
         return (x * Derivative(y, t, **{'evaluate': True}) - y *
                 Derivative(x, t, **{'evaluate': True})) / (x**2 + y**2)
 
@@ -346,8 +342,6 @@ class conjugate(Function):
         return self.args[0]
 
     def _eval_derivative(self, x):
-        if not self.has(x):
-            return S.Zero
         return conjugate(Derivative(self.args[0], x, **{'evaluate': True}))
 
 # /cyclic/

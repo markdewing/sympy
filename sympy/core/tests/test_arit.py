@@ -1,4 +1,6 @@
-from sympy import Symbol, sin, cos, exp, O, sqrt, Rational, Real, re, pi, \
+from __future__ import division
+
+from sympy import Symbol, sin, cos, exp, O, sqrt, Rational, Float, re, pi, \
         sympify, sqrt, Add, Mul, Pow, I, log, S
 from sympy.utilities.pytest import XFAIL
 
@@ -192,6 +194,24 @@ def test_expand():
     assert e.expand(power_exp=False, power_base=False, deep=False) == x*(x*(y + z))**(x*(y + z)) + y*(x*(y + z))**(x*(y + z))
     e = (x*(y+z))**z
     assert e.expand(power_base=True, mul=True, deep=True) in [x**z*(y + z)**z, (x*y + x*z)**z]
+    assert ((2*y)**z).expand() == 2**z*y**z
+    p=Symbol('p', positive=True)
+    assert sqrt(-x).expand().is_Pow
+    assert sqrt(-x).expand(force=True) == I*sqrt(x)
+    assert ((2*y*p)**z).expand() == 2**z*p**z*y**z
+    assert ((2*y*p*x)**z).expand() == 2**z*p**z*(x*y)**z
+    assert ((2*y*p*x)**z).expand(force=True) == 2**z*p**z*x**z*y**z
+    assert ((2*y*p*-pi)**z).expand() ==  2**z*pi**z*p**z*(-y)**z
+    assert ((2*y*p*-pi*x)**z).expand() == 2**z*pi**z*p**z*(-x*y)**z
+    n=Symbol('n', negative=True)
+    m=Symbol('m', negative=True)
+    assert ((-2*x*y*n)**z).expand() == 2**z*(-n)**z*(x*y)**z
+    assert ((-2*x*y*n*m)**z).expand() == 2**z*(-m)**z*(-n)**z*(-x*y)**z
+    # issue 2383
+    assert sqrt(-2*x*n) == sqrt(2)*sqrt(-n)*sqrt(x)
+    # issue 2506 (2)
+    assert (cos(x+y)**2).expand(trig=True) == \
+      sin(x)**2*sin(y)**2 - 2*sin(x)*sin(y)*cos(x)*cos(y) + cos(x)**2*cos(y)**2
 
     # Check that this isn't too slow
     x = Symbol('x')
@@ -221,9 +241,9 @@ def test_power_expand():
     assert (A**(a+b)).expand() != A**(a+b)
 
 def test_real_mul():
-    Real(0) * pi * x == Real(0)
-    Real(1) * pi * x == pi * x
-    len((Real(2) * pi * x).args) == 3
+    Float(0) * pi * x == Float(0)
+    Float(1) * pi * x == pi * x
+    len((Float(2) * pi * x).args) == 3
 
 def test_ncmul():
     A = Symbol("A", commutative=False)
@@ -326,12 +346,12 @@ def test_Add_Mul_is_bounded():
     assert sin(x).is_bounded == True
     assert (x*sin(x)).is_bounded == False
     assert (1024*sin(x)).is_bounded == True
-    assert (sin(x)*exp(x)).is_bounded == False
+    assert (sin(x)*exp(x)).is_bounded is not True
     assert (sin(x)*cos(x)).is_bounded == True
-    assert (x*sin(x)*exp(x)).is_bounded == False
+    assert (x*sin(x)*exp(x)).is_bounded is not True
 
     assert (sin(x)-67).is_bounded == True
-    assert (sin(x)+exp(x)).is_bounded == False
+    assert (sin(x)+exp(x)).is_bounded is not True
 
 def test_Mul_is_even_odd():
     x = Symbol('x', integer=True)
@@ -849,19 +869,47 @@ def test_Pow_is_real():
 
     assert sqrt(-1 - sqrt(2)).is_real == False
 
+    i = Symbol('i', imaginary=True)
+    assert (i**i).is_real is None
+    assert (I**i).is_real is None
+    assert ((-I)**i).is_real is None
+    assert (2**i).is_real is None # (2**(pi/log(2) * I)) is real, 2**I is not
+    assert (2**I).is_real is False
+    assert (2**-I).is_real is False
+    assert (i**2).is_real
+    assert (i**3).is_real is False
+    assert (i**x).is_real is None # could be (-I)**(2/3)
+    e = Symbol('e', even=True)
+    o = Symbol('o', odd=True)
+    k = Symbol('k', integer=True)
+    assert (i**e).is_real
+    assert (i**o).is_real is False
+    assert (i**k).is_real is None
+
 @XFAIL
+def test_real_Pow():
+    """
+    This test fails perhaps because (pi/log(x)).is_real is True even with
+    no assumptions on x. See issue 2322.
+    """
+    k = Symbol('k', integer=True, nonzero=True)
+    assert (k**(I*pi/log(k))).is_real
+
 def test_Pow_is_bounded():
     x = Symbol('x', real=True)
+    p = Symbol('p', positive=True)
+    n = Symbol('n', negative=True)
 
-    assert (x**2).is_bounded == None
-
+    assert (x**2).is_bounded == None # x could be oo
+    assert (x**x).is_bounded == None # ditto
+    assert (p**x).is_bounded == None # ditto
+    assert (n**x).is_bounded == None # ditto
+    assert (1/S.Pi).is_bounded
     assert (sin(x)**2).is_bounded == True
     assert (sin(x)**x).is_bounded == None
     assert (sin(x)**exp(x)).is_bounded == None
-
-    # XXX This first one fails
-    assert (1/sin(x)).is_bounded == False
-    assert (1/exp(x)).is_bounded == False
+    assert (1/sin(x)).is_bounded == None # if zero, no, otherwise yes
+    assert (1/exp(x)).is_bounded == None # x could be -oo
 
 def test_Pow_is_even_odd():
     x = Symbol('x')
@@ -1075,36 +1123,33 @@ def test_suppressed_evaluation():
 
 
 def test_Add_as_coeff_mul():
-    assert (x+1).as_coeff_mul()   == ( 1, (x+1,) )
-    assert (x+2).as_coeff_mul()   == ( 1, (x+2,) )
-    assert (x+3).as_coeff_mul()   == ( 1, (x+3,) )
+    # Issue 2425.  These should all be (1, self)
+    assert (x + 1).as_coeff_mul()   == (1, (x + 1,) )
+    assert (x + 2).as_coeff_mul()   == (1, (x + 2,) )
+    assert (x + 3).as_coeff_mul()   == (1, (x + 3,) )
 
-    assert (x-1).as_coeff_mul()   == (-1, (1-x,) )
-    assert (x-2).as_coeff_mul()   == (-1, (2-x,) )
-    assert (x-3).as_coeff_mul()   == (-1, (3-x,) )
+    assert (x - 1).as_coeff_mul()   == (1, (x - 1,) )
+    assert (x - 2).as_coeff_mul()   == (1, (x - 2,) )
+    assert (x - 3).as_coeff_mul()   == (1, (x - 3,) )
 
     n = Symbol('n', integer=True)
-    assert (n+1).as_coeff_mul()   == ( 1, (n+1,) )
-    assert (n+2).as_coeff_mul()   == ( 1, (n+2,) )
-    assert (n+3).as_coeff_mul()   == ( 1, (n+3,) )
+    assert (n + 1).as_coeff_mul()   == (1, (n + 1,) )
+    assert (n + 2).as_coeff_mul()   == (1, (n + 2,) )
+    assert (n + 3).as_coeff_mul()   == (1, (n + 3,) )
 
-    assert (n-1).as_coeff_mul()   == (-1, (1-n,) )
-    assert (n-2).as_coeff_mul()   == (-1, (2-n,) )
-    assert (n-3).as_coeff_mul()   == (-1, (3-n,) )
+    assert (n - 1).as_coeff_mul()   == (1, (n - 1,) )
+    assert (n - 2).as_coeff_mul()   == (1, (n - 2,) )
+    assert (n - 3).as_coeff_mul()   == (1, (n - 3,) )
 
 def test_Pow_as_coeff_mul_doesnt_expand():
     assert exp(x + y).as_coeff_mul() == (1, (exp(x + y),))
     assert exp(x + exp(x + y)) != exp(x + exp(x)*exp(y))
-
-def test_issue974():
-    assert -1/(-1-x)    == 1/(1+x)
 
 def test_issue415():
     assert (S.Half)**S.Half * sqrt(6) == 2 * sqrt(3)/2
     assert S(1)/2*sqrt(6)*sqrt(2) == sqrt(3)
     assert sqrt(6)/2*sqrt(2) == sqrt(3)
     assert sqrt(6)*sqrt(2)/2 == sqrt(3)
-
 
 def test_make_args():
     assert Add.make_args(x) == (x,)
@@ -1123,3 +1168,32 @@ def test_issue2027():
     assert (-2)**x*(-3)**x != 6**x
     i = Symbol('i', integer=1)
     assert (-2)**i*(-3)**i == 6**i
+
+def test_Add_primitive():
+    (x + 2).primitive() == (1, x + 2)
+
+    (3*x + 2).primitive() == (1, x + 2)
+    (2*x + 2).primitive() == (2, x + 1)
+    (3*x + 3).primitive() == (3, x + 1)
+    (4*x + 8).primitive() == (4, x + 2)
+
+    (3*x + 2*y).primitive() == (1, x + 2*y)
+    (2*x + 2*y).primitive() == (2, x + y)
+    (3*x + 3*y).primitive() == (3, x + y)
+    (4*x + 8*y).primitive() == (4, x + 2*y)
+
+    (3/x + 2*x*y*z**2).primitive() == (1, 1/x + 2*x*y*z**2)
+    (2/x + 2*x*y*z**2).primitive() == (2, 1/x + x*y*z**2)
+    (3/x + 3*x*y*z**2).primitive() == (3, 1/x + x*y*z**2)
+    (4/x + 8*x*y*z**2).primitive() == (4, 1/x + 2*x*y*z**2)
+
+    (2*x/3 + 4*y/9).primitive() == (2/9, 3*x + 2*y)
+    (2*x/3 + 4.1*y).primitive() == (1, 2*x/3 + 4.1*y)
+
+def test_issue2361():
+    u = Mul(2, (1 + x), evaluate=False)
+    assert 2 + u == 4 + 2*x
+    n = Symbol('n', commutative=False)
+    u = 2*(1 + n)
+    assert u.is_Mul
+    assert (2 + u).args == (S(2), u)

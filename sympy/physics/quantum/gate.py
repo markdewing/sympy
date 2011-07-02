@@ -17,6 +17,7 @@ import random
 
 from sympy import Mul, Pow, Integer, Matrix, Rational, Tuple, I, sqrt, Add
 from sympy.core.numbers import Number
+from sympy.core.compatibility import ordered_iter
 from sympy.printing.pretty.stringpict import prettyForm, stringPict
 from sympy.utilities.iterables import all
 
@@ -24,7 +25,7 @@ from sympy.physics.quantum.anticommutator import AntiCommutator
 from sympy.physics.quantum.commutator import Commutator
 from sympy.physics.quantum.qexpr import QuantumError
 from sympy.physics.quantum.hilbert import ComplexSpace
-from sympy.physics.quantum.operator import UnitaryOperator, Operator
+from sympy.physics.quantum.operator import UnitaryOperator, Operator, HermitianOperator
 from sympy.physics.quantum.matrixutils import (
     matrix_tensor_product, matrix_eye
 )
@@ -314,7 +315,7 @@ class CGate(Gate):
         # _eval_args has the right logic for the controls argument.
         controls = args[0]
         gate = args[1]
-        if not isinstance(controls, (list, tuple, Tuple)):
+        if not ordered_iter(controls):
             controls = (controls,)
         controls = UnitaryOperator._eval_args(controls)
         _validate_targets_controls(chain(controls,gate.targets))
@@ -442,7 +443,7 @@ class UGate(Gate):
     @classmethod
     def _eval_args(cls, args):
         targets = args[0]
-        if not isinstance(targets, (list, tuple, Tuple)):
+        if not ordered_iter(targets):
             targets = (targets,)
         targets = Gate._eval_args(targets)
         _validate_targets_controls(targets)
@@ -608,7 +609,7 @@ class HadamardGate(OneQubitGate):
         return sqrt(2)*IdentityGate(self.targets[0])
 
 
-class XGate(OneQubitGate):
+class XGate(HermitianOperator, OneQubitGate):
     """The single qubit X, or NOT, gate.
 
     Parameters
@@ -645,7 +646,7 @@ class XGate(OneQubitGate):
 
 
 
-class YGate(OneQubitGate):
+class YGate(HermitianOperator, OneQubitGate):
     """The single qubit Y gate.
 
     Parameters
@@ -673,7 +674,7 @@ class YGate(OneQubitGate):
         return Integer(0)
 
 
-class ZGate(OneQubitGate):
+class ZGate(HermitianOperator, OneQubitGate):
     """The single qubit Z gate.
 
     Parameters
@@ -837,8 +838,8 @@ class CNotGate(CGate, TwoQubitGate):
     def _print_contents_pretty(self, printer, *args):
         return Gate._print_contents_pretty(self, printer, *args)
 
-    def _latex(self, printer, *args):
-        return Gate._latex(self, printer, *args)
+    def _print_contents_latex(self, printer, *args):
+        return Gate._print_contents_latex(self, printer, *args)
 
     #-------------------------------------------------------------------------
     # Commutator/AntiCommutator

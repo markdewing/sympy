@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 """Quantum field theory example
 
 * http://en.wikipedia.org/wiki/Quantum_field_theory
@@ -108,7 +109,7 @@ def main():
     M = M[0]
     assert isinstance(M, Basic)
     #print M
-    #print trim(M)
+    #print simplify(M)
 
     d=Symbol("d", real=True) #d=E+m
 

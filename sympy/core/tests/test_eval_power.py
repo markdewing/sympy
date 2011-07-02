@@ -1,4 +1,4 @@
-from sympy.core import Rational, Symbol, Basic, S, Real, Integer
+from sympy.core import Rational, Symbol, Basic, S, Float, Integer
 from sympy.functions.elementary.miscellaneous import sqrt
 
 def test_rational():
@@ -21,7 +21,7 @@ def test_negative_real():
     def feq(a,b):
         return abs(a - b) < 1E-10
 
-    assert feq(S.One / Real(-0.5), -Integer(2))
+    assert feq(S.One / Float(-0.5), -Integer(2))
 
 def test_expand():
     x = Symbol('x')
@@ -134,14 +134,15 @@ def test_issue1263():
     np = Symbol('np',positive=False)
     assert (((1 + x/np)**-2)**(-S.One)).as_numer_denom() == ((np + x)**2, np**2)
 
-def test_issue1496():
+def test_Pow_signs():
+    """Cf. issues 1496 and 2151"""
     x = Symbol('x')
     y = Symbol('y')
     n = Symbol('n', even=True)
-    assert (3-y)**2 == (y-3)**2
-    assert (3-y)**n == (y-3)**n
-    assert (-3+y-x)**2 == (3-y+x)**2
-    assert (y-3)**3 == -(3-y)**3
+    assert (3-y)**2 != (y-3)**2
+    assert (3-y)**n != (y-3)**n
+    assert (-3+y-x)**2 != (3-y+x)**2
+    assert (y-3)**3 != -(3-y)**3
 
 def test_power_with_noncommutative_mul_as_base():
     x = Symbol('x', commutative=False)
@@ -155,6 +156,11 @@ def test_zero():
     assert 0**x != 0
     assert 0**(2*x) == 0**x
     assert (0**(2 - x)).as_base_exp() == (0, 2 - x)
-    assert 0**(x - 2) == S.Infinity**(2 - x)
+    assert 0**(x - 2) != S.Infinity**(2 - x)
     assert 0**(2*x*y) == 0**(x*y)
     assert 0**(-2*x*y) == S.Infinity**(x*y)
+
+def test_pow_as_base_exp():
+    x = Symbol('x')
+    assert (S.Infinity**(2 - x)).as_base_exp() == (S.Infinity, 2 - x)
+    assert (S.Infinity**(x - 2)).as_base_exp() == (S.Infinity, x - 2)

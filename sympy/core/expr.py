@@ -4,9 +4,50 @@ from singleton import S
 from evalf import EvalfMixin
 from decorators import _sympifyit, call_highest_priority
 from cache import cacheit
+from sympy.core.compatibility import any, all, reduce
 
 class Expr(Basic, EvalfMixin):
     __slots__ = []
+
+    def sort_key(self, order=None):
+        # XXX: The order argument does not actually work
+        from sympy.core import S
+
+        def key_inner(arg):
+            if isinstance(arg, Basic):
+                return arg.sort_key(order=order)
+            elif hasattr(arg, '__iter__'):
+                return tuple(key_inner(arg) for arg in args)
+            else:
+                return arg
+
+        coeff, expr = self.as_coeff_Mul()
+        if expr.is_Pow:
+            expr, exp = expr.args
+        else:
+            expr, exp = expr, S.One
+
+        if expr.is_Atom:
+            if expr.is_Symbol:
+                args = (str(expr),)
+            else:
+                args = (expr,)
+        else:
+            if expr.is_Add:
+                args = expr.as_ordered_terms(order=order)
+            else:
+                args = expr.args
+
+            args = tuple(key_inner(arg) for arg in args)
+
+            if expr.is_Mul:
+                args = sorted(args)
+
+        args = (len(args), args)
+        exp = exp.sort_key(order=order)
+
+        return expr.class_key(), args, exp, coeff
+
 
     # ***************
     # * Arithmetics *
@@ -18,6 +59,10 @@ class Expr(Basic, EvalfMixin):
     # the object with the highest _op_priority to handle the call.
     # Custom subclasses that want to define their own binary special methods
     # should set an _op_priority value that is higher than the default.
+    #
+    # **NOTE**:
+    # This is a temporary fix, and will eventually be replaced with
+    # something better and more powerful.  See issue 2411.
     _op_priority = 10.0
 
     def __pos__(self):
@@ -119,15 +164,37 @@ class Expr(Basic, EvalfMixin):
     @staticmethod
     def _from_mpmath(x, prec):
         if hasattr(x, "_mpf_"):
-            return C.Real._new(x._mpf_, prec)
+            return C.Float._new(x._mpf_, prec)
         elif hasattr(x, "_mpc_"):
             re, im = x._mpc_
-            re = C.Real._new(re, prec)
-            im = C.Real._new(im, prec)*S.ImaginaryUnit
+            re = C.Float._new(re, prec)
+            im = C.Float._new(im, prec)*S.ImaginaryUnit
             return re+im
         else:
             raise TypeError("expected mpmath number (mpf or mpc)")
 
+    @property
+    def is_number(self):
+        """Returns True if 'self' is a number.
+
+           >>> from sympy import log, Integral
+           >>> from sympy.abc import x, y
+
+           >>> x.is_number
+           False
+           >>> (2*x).is_number
+           False
+           >>> (2 + log(2)).is_number
+           True
+           >>> (2 + Integral(2, x)).is_number
+           False
+           >>> (2 + Integral(2, (x, 1, 2))).is_number
+           True
+
+        """
+        if not self.args:
+            return False
+        return all(obj.is_number for obj in self.iter_basic_args())
 
     def _eval_interval(self, x, a, b):
         """
@@ -142,31 +209,29 @@ class Expr(Basic, EvalfMixin):
 
         """
         from sympy.series import limit
+        if (a is None and b is None):
+            raise ValueError('Both interval ends cannot be None.')
+
         if a is None:
             A = 0
         else:
             A = self.subs(x, a)
-
-        if A is S.NaN:
-            A = limit(self, x, a)
             if A is S.NaN:
-                return self
+                A = limit(self, x, a)
+                if A is S.NaN:
+                    return A
+
         if b is None:
             B = 0
         else:
             B = self.subs(x, b)
+            if B is S.NaN:
+                B = limit(self, x, b)
 
-        if B is S.NaN:
-            B = limit(self, x, b)
-        if B is S.NaN:
-            return self
         return B - A
 
     def _eval_power(self, other):
         return None
-
-    def _eval_derivative(self, s):
-        return
 
     def _eval_conjugate(self):
         if self.is_real:
@@ -176,32 +241,170 @@ class Expr(Basic, EvalfMixin):
         from sympy.functions.elementary.complexes import conjugate as c
         return c(self)
 
+
+    @classmethod
+    def _parse_order(cls, order):
+        """Parse and configure the ordering of terms. """
+        from sympy.polys.monomialtools import monomial_key
+
+        try:
+            reverse = order.startswith('rev-')
+        except AttributeError:
+            reverse = False
+        else:
+            if reverse:
+                order = order[4:]
+
+        monom_key = monomial_key(order)
+
+        def neg(monom):
+            result = []
+
+            for m in monom:
+                if isinstance(m, tuple):
+                    result.append(neg(m))
+                else:
+                    result.append(-m)
+
+            return tuple(result)
+
+        def key(term):
+            _, ((re, im), monom, ncpart) = term
+
+            monom = neg(monom_key(monom))
+            ncpart = tuple([ e.sort_key(order=order) for e in ncpart ])
+            coeff = ((bool(im), im), (re, im))
+
+            return monom, ncpart, coeff
+
+        return key, reverse
+
+    def as_ordered_factors(self, order=None):
+        """
+        Transform an expression to an ordered list of factors.
+
+        **Examples**
+
+        >>> from sympy import sin, cos
+        >>> from sympy.abc import x, y
+
+        >>> (2*x*y*sin(x)*cos(x)).as_ordered_factors()
+        [2, x, y, sin(x), cos(x)]
+
+        """
+        if not self.is_Mul:
+            return [self]
+
+        cpart = []
+        ncpart = []
+
+        for arg in self.args:
+            if arg.is_commutative:
+                cpart.append(arg)
+            else:
+                ncpart.append(arg)
+
+        return sorted(cpart, key=lambda expr: expr.sort_key(order=order)) + ncpart
+
+    def as_ordered_terms(self, order=None, data=False):
+        """
+        Transform an expression to an ordered list of terms.
+
+        **Examples**
+
+        >>> from sympy import sin, cos
+        >>> from sympy.abc import x, y
+
+        >>> (sin(x)**2*cos(x) + sin(x)**2 + 1).as_ordered_terms()
+        [sin(x)**2*cos(x), sin(x)**2, 1]
+
+        """
+        key, reverse = self._parse_order(order)
+        terms, gens = self.as_terms()
+
+        if not any(term.is_Order for term, _ in terms):
+            ordered = sorted(terms, key=key, reverse=reverse)
+        else:
+            _terms, _order = [], []
+
+            for term, repr in terms:
+                if not term.is_Order:
+                    _terms.append((term, repr))
+                else:
+                    _order.append((term, repr))
+
+            ordered = sorted(_terms, key=key, reverse=True) \
+                    + sorted(_order, key=key, reverse=True)
+
+        if data:
+            return ordered, gens
+        else:
+            return [ term for term, _ in ordered ]
+
+    def as_terms(self):
+        """Transform an expression to a list of terms. """
+        from sympy.core import Add, Mul, S
+        from sympy.core.exprtools import decompose_power
+        from sympy.utilities import default_sort_key
+
+        gens, terms = set([]), []
+
+        for term in Add.make_args(self):
+            coeff, _term = term.as_coeff_Mul()
+
+            coeff = complex(coeff)
+            cpart, ncpart = {}, []
+
+            if _term is not S.One:
+                for factor in Mul.make_args(_term):
+                    if factor.is_number:
+                        try:
+                            coeff *= complex(factor)
+                        except ValueError:
+                            pass
+                        else:
+                            continue
+
+                    if factor.is_commutative:
+                        base, exp = decompose_power(factor)
+
+                        cpart[base] = exp
+                        gens.add(base)
+                    else:
+                        ncpart.append(factor)
+
+            coeff = coeff.real, coeff.imag
+            ncpart = tuple(ncpart)
+
+            terms.append((term, (coeff, cpart, ncpart)))
+
+        gens = sorted(gens, key=default_sort_key)
+
+        k, indices = len(gens), {}
+
+        for i, g in enumerate(gens):
+            indices[g] = i
+
+        result = []
+
+        for term, (coeff, cpart, ncpart) in terms:
+            monom = [0]*k
+
+            for base, exp in cpart.iteritems():
+                monom[indices[base]] = exp
+
+            result.append((term, (coeff, tuple(monom), ncpart)))
+
+        return result, gens
+
+
     def removeO(self):
         """Removes the additive O(..) symbol if there is one"""
-        if self.is_Order:
-            return S.Zero
-        if not self.is_Add:
-            return self
-        args = []
-        for a in self.args:
-            if a.is_Order:
-                continue
-            args.append(a)
-        return self._new_rawargs(*args)
+        return self
 
     def getO(self):
         """Returns the additive O(..) symbol if there is one, else None."""
-        if self.is_Order:
-            return self
-        if not self.is_Add:
-            return None
-        args = []
-        for a in self.args:
-            if not a.is_Order:
-                continue
-            args.append(a)
-        if args:
-            return self._new_rawargs(*args)
+        return None
 
     def getn(self):
         """
@@ -244,52 +447,316 @@ class Expr(Basic, EvalfMixin):
 
         raise NotImplementedError('not sure of order of %s' % o)
 
-    def coeff(self, x, expand=True):
+    def count_ops(self, visual=None):
+        """wrapper for count_ops that returns the operation count."""
+        from sympy import count_ops
+        return count_ops(self, visual)
+
+    def args_cnc(self):
+        """treat self as Mul and split it into tuple (set, list)
+        where `set` contains the commutative parts and `list` contains
+        the ordered non-commutative args.
+
+        A special treatment is that -1 is separated from a Rational:
+
+        >>> from sympy import symbols
+        >>> A, B = symbols('A B', commutative=0)
+        >>> x, y = symbols('x y')
+        >>> (-2*x*y).args_cnc()
+        [set([-1, 2, x, y]), []]
+        >>> (-2*x*A*B*y).args_cnc()
+        [set([-1, 2, x, y]), [A, B]]
+
+        The arg is treated as a Mul:
+
+        >>> (-2 + x + A).args_cnc()
+        [set(), [x - 2 + A]]
         """
-        Returns the coefficient of the term "x" or None if there is no "x".
 
-        Optional expand keyword argument allows one to control whether the
-        expression is expanded before terms are collected, which can be useful
-        if the term "x" isn't nested inside of terms and you don't want the
-        returned coefficient to be expanded.
+        if self.is_Mul:
+            args = list(self.args)
+        else:
+            args = [self]
+        for i, mi in enumerate(args):
+            if not mi.is_commutative:
+                c = args[:i]
+                nc = args[i:]
+                break
+        else:
+            c = args
+            nc = []
 
-        Example:
+        if c and c[0].is_Rational and c[0].is_negative and c[0] != S.NegativeOne:
+            c[:1] = [S.NegativeOne, -c[0]]
+
+        return [set(c), nc]
+
+    def coeff(self, x, right=False):
+        """
+        Returns the coefficient of the exact term "x" or None if there is no "x".
+
+        When x is noncommutative, the coeff to the left (default) or right of x
+        can be returned. The keyword 'right' is ignored when x is commutative.
+
+        Examples::
 
         >>> from sympy import symbols
         >>> from sympy.abc import x, y, z
+
+        You can select terms that have an explicit negative in front of them:
+
+        >>> (-x+2*y).coeff(-1)
+        x
+        >>> (x-2*y).coeff(-1)
+        2*y
+
+        You can select terms with no rational coefficient:
+
+        >>> (x+2*y).coeff(1)
+        x
         >>> (3+2*x+4*x**2).coeff(1)
+
+        You can select terms that have a numerical term in front of them:
+
+        >>> (-x-2*y).coeff(2)
+        -y
+        >>> from sympy import sqrt
+        >>> (x+sqrt(2)*x).coeff(sqrt(2))
+        x
+
+        The matching is exact:
+
         >>> (3+2*x+4*x**2).coeff(x)
         2
         >>> (3+2*x+4*x**2).coeff(x**2)
         4
         >>> (3+2*x+4*x**2).coeff(x**3)
-        >>> (z*(x+y)**2).coeff(z)
-        2*x*y + x**2 + y**2
-        >>> (z*(x+y)**2).coeff(z, expand=False)
-        (x + y)**2
-        >>>
+        >>> (z*(x+y)**2).coeff((x+y)**2)
+        z
+        >>> (z*(x+y)**2).coeff(x+y)
+
+        In addition, no factoring is done, so 2 + y is not obtained from the
+        following:
+
+        >>> (2*x+2+(x+1)*y).coeff(x+1)
+        y
+
+        >>> n, m, o = symbols('n m o', commutative=False)
+        >>> n.coeff(n)
+        1
+        >>> (3*n).coeff(n)
+        3
+        >>> (n*m + m*n*m).coeff(n) # = (1 + m)*n*m
+        1 + m
+        >>> (n*m + m*n*m).coeff(n, right=True) # = (1 + m)*n*m
+        m
+
+        If there is more than one possible coefficient None is returned:
+
+        >>> (n*m + m*n).coeff(n)
+
+        If there is only one possible coefficient, it is returned:
+
+        >>> (n*m + o*m*n).coeff(m*n)
+        o
+        >>> (n*m + o*m*n).coeff(m*n, right=1)
+        1
+        """
+        x = sympify(x)
+        if not x: # 0 or None
+            return None
+        if x == self:
+            return S.One
+        if x is S.One:
+            try:
+                assert Add.make_args(S.Zero) and Mul.make_args(S.One)
+                # replace try/except with this
+                co = [a for a in Add.make_args(self)
+                      if not any(ai.is_number for ai in Mul.make_args(a))]
+            except AssertionError:
+                co = [a for a in (Add.make_args(self) or [S.Zero])
+                      if not any(ai.is_number for ai in (Mul.make_args(a) or [S.One]))]
+            if not co:
+                return None
+            return Add(*co)
+
+        def incommon(l1, l2):
+            if not l1 or not l2:
+                return []
+            n = min(len(l1), len(l2))
+            for i in xrange(n):
+                if l1[i] != l2[i]:
+                    return l1[:i]
+            return l1[:]
+
+        def arglist(x):
+            """ Return list of x's args when treated as a Mul after checking
+            to see if a negative Rational is present (in which case it is made
+            positive and a -1 is added to the list).
+            """
+
+            margs = list(Mul.make_args(x))
+            try:
+                assert Mul.make_args(S.One)
+                # replace try/except with the following
+                if margs[0].is_Rational and margs[0].is_negative and margs[0] != S.NegativeOne:
+                    margs.append(S.NegativeOne)
+                    margs[0] *= -1
+            except AssertionError:
+                if margs and margs[0].is_Rational and margs[0].is_negative and margs[0] != S.NegativeOne:
+                    margs.append(S.NegativeOne)
+                    margs[0] *= -1
+            return margs
+
+        def find(l, sub, first=True):
+            """ Find where list sub appears in list l. When `first` is True
+            the first occurance from the left is returned, else the last
+            occurance is returned. Return None if sub is not in l.
+
+            >> l = range(5)*2
+            >> find(l, [2, 3])
+            2
+            >> find(l, [2, 3], first=0)
+            7
+            >> find(l, [2, 4])
+            None
+
+            """
+            if not sub or not l or len(sub) > len(l):
+                return None
+            n = len(sub)
+            if not first:
+                l.reverse()
+                sub.reverse()
+            for i in xrange(0, len(l) - n + 1):
+                if all(l[i + j] == sub[j] for j in range(n)):
+                    break
+            else:
+                i = None
+            if not first:
+                l.reverse()
+                sub.reverse()
+            if i is not None and not first:
+                i = len(l) - (i + n)
+            return i
+
+        co = []
+        try:
+            assert Add.make_args(S.Zero)
+            # replace try/except with this
+            args = Add.make_args(self)
+        except AssertionError:
+            args = Add.make_args(self) or [S.Zero]
+        self_c = self.is_commutative
+        x_c = x.is_commutative
+        if self_c and not x_c:
+            return None
+
+        if self_c:
+            xargs = set(arglist(x))
+            for a in Add.make_args(self):
+                margs = set(arglist(a))
+                if len(xargs) > len(margs):
+                    continue
+                resid = margs.difference(xargs)
+                if len(resid) + len(xargs) == len(margs):
+                    co.append(Mul(*resid))
+            if co == []:
+                return None
+            elif co:
+                return Add(*co)
+        elif x_c:
+            xargs = set(arglist(x))
+            for a in Add.make_args(self):
+                margs, nc = a.args_cnc()
+                if len(xargs) > len(margs):
+                    continue
+                resid = margs.difference(xargs)
+                if len(resid) + len(xargs) == len(margs):
+                    co.append(Mul(*(list(resid) + nc)))
+            if co == []:
+                return None
+            elif co:
+                return Add(*co)
+        else: # both nc
+            xargs, nx = x.args_cnc()
+            # find the parts that pass the commutative terms
+            for a in Add.make_args(self):
+                margs, nc = a.args_cnc()
+                if len(xargs) > len(margs):
+                    continue
+                resid = margs.difference(xargs)
+                if len(resid) + len(xargs) == len(margs):
+                    co.append((resid, nc))
+            # now check the non-comm parts
+            if not co:
+                return None
+            if all(n == co[0][1] for r, n in co):
+                ii = find(co[0][1], nx, right)
+                if not ii is None:
+                    if not right:
+                        return Mul(Add(*[Mul(*r) for r, c in co]), Mul(*co[0][1][:ii]))
+                    else:
+                        return Mul(*co[0][1][ii+len(nx):])
+            beg = reduce(incommon, (n[1] for n in co))
+            if beg:
+                ii = find(beg, nx, right)
+                if not ii is None:
+                    if not right:
+                        gcdc = co[0][0]
+                        for i in xrange(1, len(co)):
+                            gcdc = gcdc.intersection(co[i][0])
+                            if not gcdc:
+                                break
+                        return Mul(*(list(gcdc) + beg[:ii]))
+                    else:
+                        m = ii + len(nx)
+                        return Add(*[Mul(*(list(r) + n[m:])) for r, n in co])
+            end = list(reversed(reduce(incommon, (list(reversed(n[1])) for n in co))))
+            if end:
+                ii = find(end, nx, right)
+                if not ii is None:
+                    if not right:
+                        return Add(*[Mul(*(list(r) + n[:-len(end)+ii])) for r, n in co])
+                    else:
+                        return Mul(*end[ii+len(nx):])
+            # look for single match
+            hit = None
+            for i, (r, n) in enumerate(co):
+                ii = find(n, nx, right)
+                if not ii is None:
+                    if not hit:
+                        hit = ii, r, n
+                    else:
+                        break
+            else:
+                if hit:
+                    ii, r, n = hit
+                    if not right:
+                        return Mul(*(list(r) + n[:ii]))
+                    else:
+                        return Mul(*n[ii+len(nx):])
+
+            return None
+
+    def as_expr(self, *gens):
+        """
+        Convert a polynomial to a SymPy expression.
+
+        **Examples**
+
+        >>> from sympy import sin
+        >>> from sympy.abc import x, y
+
+        >>> f = (x**2 + x*y).as_poly(x, y)
+        >>> f.as_expr()
+        x**2 + x*y
+
+        >>> sin(x).as_expr()
+        sin(x)
 
         """
-        from sympy import collect
-        x = sympify(x)
-        const = x.as_coeff_mul()[0] # constant multiplying x
-        if const != S.One: # get rid of constants
-            result = self.coeff(x/const)
-            if result is not None:
-                return(result/const)
-            else:
-                return None
-        if x.is_Integer:
-            return
-
-        result = self
-        if expand:
-            result = result.expand() # collect expects its arguments in expanded form
-        result = collect(result, x, evaluate=False, exact=True)
-        if x in result:
-            return result[x]
-        else:
-            return None
+        return self
 
     def as_coefficient(self, expr):
         """Extracts symbolic coefficient at the given expression. In
@@ -297,89 +764,171 @@ class Expr(Basic, EvalfMixin):
            of 'expr' and 'expr'-free coefficient. If such separation
            is not possible it will return None.
 
-           >>> from sympy import E, pi, sin, I
+           >>> from sympy import E, pi, sin, I, symbols
            >>> from sympy.abc import x, y
 
            >>> E.as_coefficient(E)
            1
            >>> (2*E).as_coefficient(E)
            2
-
-           >>> (2*E + x).as_coefficient(E)
            >>> (2*sin(E)*E).as_coefficient(E)
+
+           >>> (2*E + x*E).as_coefficient(E)
+           x + 2
+           >>> (2*E*x + x).as_coefficient(E)
+
+           >>> (E*(x + 1) + x).as_coefficient(E)
 
            >>> (2*pi*I).as_coefficient(pi*I)
            2
-
            >>> (2*I).as_coefficient(pi*I)
 
         """
-        if expr.is_Add:
-            return None
-        else:
-            w = Wild('w')
 
-            coeff = self.match(w * expr)
+        r = self.extract_multiplicatively(expr)
+        if r and not r.has(expr):
+            return r
 
-            if coeff is not None:
-
-                if coeff[w].has(*Mul.make_args(expr)):
-                    return None
-                else:
-                    return coeff[w]
-            else:
-                return None
-
-    def as_independent(self, *deps):
-        """Returns a pair with separated parts of a given expression
-           independent of specified symbols in the first place and
-           dependent on them in the other. Both parts are valid
-           SymPy expressions.
-
-           >>> from sympy import sin, cos
-           >>> from sympy.abc import x, y
-
-           >>> (2*x*sin(x)+y+x).as_independent(x)
-           (y, x + 2*x*sin(x))
-
-           >>> (x*sin(x)*cos(y)).as_independent(x)
-           (cos(y), x*sin(x))
-
-           All other expressions are multiplicative:
-
-           >>> (sin(x)).as_independent(x)
-           (1, sin(x))
-
-           >>> (sin(x)).as_independent(y)
-           (sin(x), 1)
-
-        See also:
-         - .as_two_terms() to split expr into a head and tail
-         - .as_coeff_add(*deps) to split expr like as_independent(),
-                                but return the dependent pieces as
-                                a tuple of arguments when treating
-                                expr as an Add
-         - .as_coeff_add(*deps) to split expr like as_independent(),
-                                but return the dependent pieces as
-                                a tuple of arguments when treating
-                                expr as a Mul
+    def as_independent(self, *deps, **hint):
         """
-        indeps, depend = [], []
+        A mostly naive separation of a Mul or Add into arguments that are not/
+        are dependent on deps. To obtain as complete a separation of variables
+        as possible, use a separation method first, e.g.:
+            separatevars() to change Mul, Add and Pow (including exp) into Mul
+            .expand(mul=True) to change Add or Mul into Add
+            .expand(log=True) to change log expr into an Add
+        The only non-naive thing that is done here is to respect noncommutative
+        ordering of variables.
 
-        if self.is_Add or self.is_Mul:
-            for term in self.args:
-                if term.has(*deps):
-                    depend.append(term)
-                else:
-                    indeps.append(term)
+        The returned tuple (i, d) has the following interpretation:
 
-            return (self._new_rawargs(*indeps),
-                    self._new_rawargs(*depend))
+        * i will has no variable that appears in deps
+        * d will be 1 or else have terms that contain variables that are in deps
+        * if self is an Add then self = i + d
+        * if self is a Mul then self = i*d
+        * if self is anything else, either tuple (self, S.One) or (S.One, self)
+          is returned.
+
+        To force the expression to be treated as an Add, use the hint as_Add=True
+
+        Examples:
+
+          -- self is an Add
+            >>> from sympy import sin, cos, exp
+            >>> from sympy.abc import x, y, z
+
+            >>> (x + x*y).as_independent(x)
+            (0, x*y + x)
+            >>> (x + x*y).as_independent(y)
+            (x, x*y)
+            >>> (2*x*sin(x) + y + x + z).as_independent(x)
+            (y + z, 2*x*sin(x) + x)
+            >>> (2*x*sin(x) + y + x + z).as_independent(x, y)
+            (z, 2*x*sin(x) + x + y)
+
+          -- self is a Mul
+            >>> (x*sin(x)*cos(y)).as_independent(x)
+            (cos(y), x*sin(x))
+
+                non-commutative terms cannot always be separated out
+                when self is a Mul
+
+            >>> from sympy import symbols
+            >>> n1, n2, n3 = symbols('n1 n2 n3', commutative=False)
+            >>> (n1 + n1*n2).as_independent(n2)
+            (n1, n1*n2)
+            >>> (n2*n1 + n1*n2).as_independent(n2)
+            (0, n1*n2 + n2*n1)
+            >>> (n1*n2*n3).as_independent(n1)
+            (1, n1*n2*n3)
+            >>> (n1*n2*n3).as_independent(n2)
+            (n1, n2*n3)
+
+          -- self is anything else:
+            >>> (sin(x)).as_independent(x)
+            (1, sin(x))
+            >>> (sin(x)).as_independent(y)
+            (sin(x), 1)
+            >>> exp(x+y).as_independent(x)
+            (1, exp(x + y))
+
+          -- force self to be treated as an Add:
+            >>> (3*x).as_independent(x, as_Add=1)
+            (0, 3*x)
+
+          -- force self to be treated as a Mul:
+            >>> (3+x).as_independent(x, as_Add=0)
+            (1, x + 3)
+            >>> (-3+x).as_independent(x, as_Add=0)
+            (1, x - 3)
+
+            Note how the below differs from the above in making the
+            constant on the dep term positive.
+            >>> (y*(-3+x)).as_independent(x)
+            (y, x - 3)
+
+            Note: when trying to get independent terms, a separation method
+            might need to be used first. In this case, it is important to keep
+            track of what you send to this routine so you know how to interpret
+            the returned values
+
+            >>> from sympy import separatevars, log
+            >>> separatevars(exp(x+y)).as_independent(x)
+            (exp(y), exp(x))
+            >>> (x + x*y).as_independent(y)
+            (x, x*y)
+            >>> separatevars(x + x*y).as_independent(y)
+            (x, y + 1)
+            >>> (x*(1 + y)).as_independent(y)
+            (x, y + 1)
+            >>> (x*(1 + y)).expand(mul=True).as_independent(y)
+            (x, x*y)
+            >>> a, b=symbols('a b',positive=True)
+            >>> (log(a*b).expand(log=True)).as_independent(b)
+            (log(a), log(b))
+
+        See also: .separatevars(), .expand(log=True),
+                  .as_two_terms(), .as_coeff_add(), .as_coeff_mul()
+        """
+        from sympy.utilities.iterables import sift
+
+        func = self.func
+        if hint.get('as_Add', func is Add):
+            want = Add
         else:
+            want = Mul
+        if (want is not func or
+            func is not Add and func is not Mul):
             if self.has(*deps):
-                return (S.One, self)
+                return (want.identity, self)
             else:
-                return (self, S.One)
+                return (self, want.identity)
+        else:
+            if func is Add:
+                args = list(self.args)
+                nc = ndeps = []
+                func = Add
+            else:
+                args, nc = self.args_cnc()
+                d = sift(deps, lambda w: bool(getattr(w, 'is_commutative', True)))
+                ndeps = d.pop(False, [])
+                deps = d.pop(True, [])
+                func = Mul
+
+        # do commutative terms
+        d = sift(args, lambda x: x.has(*deps))
+        depend = d.pop(True, [])
+        indep = d.pop(False, [])
+        if func is Add or not ndeps:
+            return (func(*(indep + nc)),
+                    func(*depend))
+        else:
+            for i, n in enumerate(nc):
+                if n.has(*ndeps):
+                    depend.extend(nc[i:])
+                    break
+                indep.append(n)
+            return Mul(*indep), Mul(*depend)
 
     def as_real_imag(self, deep=True):
         """Performs complex expansion on 'self' and returns a tuple
@@ -393,7 +942,7 @@ class Expr(Basic, EvalfMixin):
 
            >>> from sympy import symbols, I
 
-           >>> x, y = symbols('xy', real=True)
+           >>> x, y = symbols('x,y', real=True)
 
            >>> (x + y*I).as_real_imag()
            (x, y)
@@ -426,7 +975,7 @@ class Expr(Basic, EvalfMixin):
     def as_coeff_mul(self, *deps):
         """Return the tuple (c, args) where self is written as a Mul, `m`.
 
-        c should contain Numbers and any terms of the Mul that are
+        c should be a Rational multiplied by any terms of the Mul that are
         independent of deps.
 
         args should be a tuple of all other terms of m; args is empty
@@ -461,7 +1010,7 @@ class Expr(Basic, EvalfMixin):
     def as_coeff_add(self, *deps):
         """Return the tuple (c, args) where self is written as an Add, `a`.
 
-        c should contain Numbers and any terms of the Mul that are
+        c should be a Rational added to any terms of the Add that are
         independent of deps.
 
         args should be a tuple of all other terms of `a`; args is empty
@@ -484,9 +1033,10 @@ class Expr(Basic, EvalfMixin):
         >>> (3 + x + y).as_coeff_add()
         (3, (y, x))
         >>> (3 + x +y).as_coeff_add(x)
-        (3 + y, (x,))
+        (y + 3, (x,))
         >>> (3 + y).as_coeff_add(x)
-        (3 + y, ())
+        (y + 3, ())
+
         """
         if deps:
             if not self.has(*deps):
@@ -514,7 +1064,7 @@ class Expr(Basic, EvalfMixin):
 
            >>> from sympy import symbols, Rational
 
-           >>> x, y = symbols('xy', real=True)
+           >>> x, y = symbols('x,y', real=True)
 
            >>> ((x*y)**3).extract_multiplicatively(x**2 * y)
            x*y**2
@@ -568,8 +1118,8 @@ class Expr(Basic, EvalfMixin):
                     return None
                 else:
                     return quotient
-            elif self.is_Real:
-                if not quotient.is_Real:
+            elif self.is_Float:
+                if not quotient.is_Float:
                     return None
                 elif self.is_positive and quotient.is_negative:
                     return None
@@ -614,7 +1164,7 @@ class Expr(Basic, EvalfMixin):
 
            >>> from sympy import symbols
 
-           >>> x, y = symbols('xy', real=True)
+           >>> x, y = symbols('x,y', real=True)
 
            >>> ((x*y)**3).extract_additively(1)
 
@@ -624,10 +1174,10 @@ class Expr(Basic, EvalfMixin):
            >>> (x+1).extract_additively(2*x)
 
            >>> (x+1).extract_additively(-x)
-           1 + 2*x
+           2*x + 1
 
            >>> (-x+1).extract_additively(2*x)
-           1 - 3*x
+           -3*x + 1
 
         """
         c = sympify(c)
@@ -657,8 +1207,8 @@ class Expr(Basic, EvalfMixin):
                     return None
                 else:
                     return sub
-            elif self.is_Real:
-                if not sub.is_Real:
+            elif self.is_Float:
+                if not sub.is_Float:
                     return None
                 elif self.is_positive and sub.is_negative:
                     return None
@@ -732,6 +1282,142 @@ class Expr(Basic, EvalfMixin):
             # As a last resort, we choose the one with greater hash
             return hash(self) < hash(negative_self)
 
+    def _eval_is_polynomial(self, syms):
+        if self.free_symbols.intersection(syms) == set([]):
+            return True
+        return False
+
+    def is_polynomial(self, *syms):
+        """
+        Return True if self is a polynomial in syms and False otherwise.
+
+        This checks if self is an exact polynomial in syms.  This function
+        returns False for expressions that are "polynomials" with symbolic
+        exponents.  Thus, you should be able to apply polynomial algorithms to
+        expressions for which this returns True, and Poly(expr, *syms) should
+        work only if and only if expr.is_polynomial(*syms) returns True. The
+        polynomial does not have to be in expanded form.  If no symbols are
+        given, all free symbols in the expression will be used.
+
+        This is not part of the assumptions system.  You cannot do
+        Symbol('z', polynomial=True).
+
+        **Examples**
+        >>> from sympy import Symbol
+        >>> x = Symbol('x')
+        >>> ((x**2 + 1)**4).is_polynomial(x)
+        True
+        >>> ((x**2 + 1)**4).is_polynomial()
+        True
+        >>> (2**x + 1).is_polynomial(x)
+        False
+
+
+        >>> n = Symbol('n', nonnegative=True, integer=True)
+        >>> (x**n + 1).is_polynomial(x)
+        False
+
+        This function does not attempt any nontrivial simplifications that may
+        result in an expression that does not appear to be a polynomial to
+        become one.
+
+        >>> from sympy import sqrt, factor, cancel
+        >>> y = Symbol('y', positive=True)
+        >>> a = sqrt(y**2 + 2*y + 1)
+        >>> a.is_polynomial(y)
+        False
+        >>> factor(a)
+        y + 1
+        >>> factor(a).is_polynomial(y)
+        True
+
+        >>> b = (y**2 + 2*y + 1)/(y + 1)
+        >>> b.is_polynomial(y)
+        False
+        >>> cancel(b)
+        y + 1
+        >>> cancel(b).is_polynomial(y)
+        True
+
+        See also .is_rational_function()
+
+        """
+        if syms:
+            syms = set(map(sympify, syms))
+        else:
+            syms = self.free_symbols
+
+        if syms.intersection(self.free_symbols) == set([]):
+            # constant polynomial
+            return True
+        else:
+            return self._eval_is_polynomial(syms)
+
+    def _eval_is_rational_function(self, syms):
+        if self.free_symbols.intersection(syms) == set([]):
+            return True
+        return False
+
+    def is_rational_function(self, *syms):
+        """
+        Test whether function is a ratio of two polynomials in the given
+        symbols, syms. When syms is not given, all free symbols will be used.
+        The rational function does not have to be in expanded or in any kind of
+        canonical form.
+
+        This function returns False for expressions that are "rational
+        functions" with symbolic exponents.  Thus, you should be able to call
+        .as_numer_denom() and apply polynomial algorithms to the result for
+        expressions for which this returns True.
+
+        This is not part of the assumptions system.  You cannot do
+        Symbol('z', rational_function=True).
+
+        Example:
+
+        >>> from sympy import Symbol, sin
+        >>> from sympy.abc import x, y
+
+        >>> (x/y).is_rational_function()
+        True
+
+        >>> (x**2).is_rational_function()
+        True
+
+        >>> (x/sin(y)).is_rational_function(y)
+        False
+
+        >>> n = Symbol('n', integer=True)
+        >>> (x**n + 1).is_rational_function(x)
+        False
+
+        This function does not attempt any nontrivial simplifications that may
+        result in an expression that does not appear to be a rational function
+        to become one.
+
+        >>> from sympy import sqrt, factor, cancel
+        >>> y = Symbol('y', positive=True)
+        >>> a = sqrt(y**2 + 2*y + 1)/y
+        >>> a.is_rational_function(y)
+        False
+        >>> factor(a)
+        (y + 1)/y
+        >>> factor(a).is_rational_function(y)
+        True
+
+        See also is_rational_function().
+
+        """
+        if syms:
+            syms = set(map(sympify, syms))
+        else:
+            syms = self.free_symbols
+
+        if syms.intersection(self.free_symbols) == set([]):
+            # constant rational function
+            return True
+        else:
+            return self._eval_is_rational_function(syms)
 
     ###################################################################################
     ##################### SERIES, LEADING TERM, LIMIT, ORDER METHODS ##################
@@ -744,7 +1430,7 @@ class Expr(Basic, EvalfMixin):
         all the terms at once when n != None.
 
         Note: when n != None, if an O() term is returned then the x in the
-        in it and the entire expression reprsents x - x0, the displacement
+        in it and the entire expression represents x - x0, the displacement
         from x0. (If there is no O() term then the series was exact and x has
         it's normal meaning.) This is currently necessary since sympy's O()
         can only represent terms at x0=0. So instead of
@@ -793,9 +1479,9 @@ class Expr(Basic, EvalfMixin):
             1 - x**2/2 + O(x**4)
             >>> e = cos(x + exp(y))
             >>> e.series(y, n=2)
-            -y*sin(1 + x) + cos(1 + x) + O(y**2)
+            cos(x + 1) - y*sin(x + 1) + O(y**2)
             >>> e.series(x, n=2)
-            -x*sin(exp(y)) + cos(exp(y)) + O(x**2)
+            cos(exp(y)) - x*sin(exp(y)) + O(x**2)
 
             If `n=None` then an iterator of the series terms will be returned.
 
@@ -871,7 +1557,7 @@ class Expr(Basic, EvalfMixin):
         # from here on it's x0=0 and dir='+' handling
 
         if n != None: # nseries handling
-            s1 = self._eval_nseries(x, n=n)
+            s1 = self._eval_nseries(x, n=n, logx=None)
             o = s1.getO() or S.Zero
             if o:
                 # make sure the requested order is returned
@@ -886,11 +1572,11 @@ class Expr(Basic, EvalfMixin):
                     # is different than the original order and then predict how
                     # many additional terms are needed
                     for more in range(1, 9):
-                        s1 = self._eval_nseries(x, n=n + more)
+                        s1 = self._eval_nseries(x, n=n + more, logx=None)
                         newn = s1.getn()
                         if newn != ngot:
                             ndo = n + (n - ngot)*more/(newn - ngot)
-                            s1 = self._eval_nseries(x, n=ndo)
+                            s1 = self._eval_nseries(x, n=ndo, logx=None)
                             # if this assertion fails then our ndo calculation
                             # needs modification
                             assert s1.getn() == n
@@ -964,7 +1650,7 @@ class Expr(Basic, EvalfMixin):
         # override this method and implement much more efficient yielding of
         # terms.
         n = 0
-        series = self._eval_nseries(x, n=n)
+        series = self._eval_nseries(x, n=n, logx=None)
         if not series.is_Order:
             if series.is_Add:
                 yield series.removeO()
@@ -974,19 +1660,19 @@ class Expr(Basic, EvalfMixin):
 
         while series.is_Order:
             n += 1
-            series = self._eval_nseries(x, n=n)
+            series = self._eval_nseries(x, n=n, logx=None)
         e = series.removeO()
         yield e
         while 1:
             while 1:
                 n += 1
-                series = self._eval_nseries(x, n=n).removeO()
+                series = self._eval_nseries(x, n=n, logx=None).removeO()
                 if e != series:
                     break
             yield series - e
             e = series
 
-    def nseries(self, x=None, x0=0, n=6, dir='+'):
+    def nseries(self, x=None, x0=0, n=6, dir='+',logx=None):
         """
         Wrapper to _eval_nseries if assumptions allow, else to series.
 
@@ -1011,11 +1697,12 @@ class Expr(Basic, EvalfMixin):
         if x and not self.has(x):
             return self
         if x is None or x0 or dir != '+':#{see XPOS above} or (x.is_positive == x.is_negative == None):
+            assert logx == None
             return self.series(x, x0, n, dir)
         else:
-            return self._eval_nseries(x, n=n)
+            return self._eval_nseries(x, n=n, logx=logx)
 
-    def _eval_nseries(self, x, n):
+    def _eval_nseries(self, x, n, logx):
         """
         Return terms of series for self up to O(x**n) at x=0
         from the positive direction.
@@ -1031,6 +1718,30 @@ class Expr(Basic, EvalfMixin):
         """
         from sympy.series.limits import limit
         return limit(self, x, xlim, dir)
+
+    def compute_leading_term(self, x, skip_abs=False, logx=None):
+        """ as_leading_term is only allowed for results of .series()
+            This is a wrapper to compute a series first.
+            If skip_abs is true, the absolute term is assumed to be zero.
+            (This is necessary because sometimes it cannot be simplified
+             to zero without a lot of work, but is still known to be zero.
+             See log._eval_nseries for an example.)
+            If skip_log is true, log(x) is treated as an independent symbol.
+            (This is needed for the gruntz algorithm.)
+        """
+        from sympy.series.gruntz import calculate_series
+        from sympy import cancel, expand_mul
+        if self.removeO() == 0:
+            return self
+        if logx is None:
+            d = C.Dummy('logx')
+            s = calculate_series(self, x, skip_abs, d).subs(d, C.log(x))
+        else:
+            s = calculate_series(self, x, skip_abs, logx)
+        s = cancel(s)
+        if skip_abs:
+            s = expand_mul(s).as_independent(x)[1]
+        return s.as_leading_term(x)
 
     @cacheit
     def as_leading_term(self, *symbols):
@@ -1107,20 +1818,18 @@ class Expr(Basic, EvalfMixin):
             return c, e
         raise ValueError("cannot compute leadterm(%s, %s), got c=%s" % (self, x, c))
 
+    def as_coeff_Mul(self):
+        """Efficiently extract the coefficient of a product. """
+        return S.One, self
+
     ###################################################################################
     ##################### DERIVATIVE, INTEGRAL, FUNCTIONAL METHODS ####################
     ###################################################################################
 
     def diff(self, *symbols, **assumptions):
-        new_symbols = map(sympify, symbols)
-        if not "evaluate" in assumptions:
-            assumptions["evaluate"] = True
-        ret = Derivative(self, *new_symbols, **assumptions)
-        return ret
-
-    def fdiff(self, *indices):
-        # FIXME FApply -> ?
-        return C.FApply(C.FDerivative(*indices), self)
+        new_symbols = map(sympify, symbols) # e.g. x, 2, y, z
+        assumptions.setdefault("evaluate", True)
+        return Derivative(self, *new_symbols, **assumptions)
 
     ###########################################################################
     ###################### EXPRESSION EXPANSION METHODS #######################
@@ -1155,8 +1864,8 @@ class Expr(Basic, EvalfMixin):
     def _eval_expand_func(self, deep=True, **hints):
         return self
 
-    def expand(self, deep=True, power_base=True, power_exp=True, mul=True, \
-           log=True, multinomial=True, basic=True, **hints):
+    def expand(self, deep=True, modulus=None, power_base=True, power_exp=True, \
+            mul=True, log=True, multinomial=True, basic=True, **hints):
         """
         Expand an expression using hints.
 
@@ -1171,6 +1880,25 @@ class Expr(Basic, EvalfMixin):
                 func = getattr(expr, '_eval_expand_'+hint, None)
                 if func is not None:
                     expr = func(deep=deep, **hints)
+
+        if modulus is not None:
+            modulus = sympify(modulus)
+
+            if not modulus.is_Integer or modulus <= 0:
+                raise ValueError("modulus must be a positive integer, got %s" % modulus)
+
+            terms = []
+
+            for term in Add.make_args(expr):
+                coeff, tail = term.as_coeff_mul()
+
+                coeff %= modulus
+
+                if coeff:
+                    terms.append(Mul(*((coeff,) + tail)))
+
+            expr = Add(*terms)
+
         return expr
 
     ###########################################################################
@@ -1187,18 +1915,13 @@ class Expr(Basic, EvalfMixin):
         from sympy.simplify import simplify
         return simplify(self)
 
-    def together(self, *args, **kwargs):
-        """See the together function in sympy.simplify"""
-        from sympy.simplify import together
-        return together(self, *args, **kwargs)
-
     def nsimplify(self, constants=[], tolerance=None, full=False):
         """See the nsimplify function in sympy.simplify"""
         from sympy.simplify import nsimplify
         return nsimplify(self, constants, tolerance, full)
 
-    def separate(self, deep=False):
-        """See the seperate function in sympy.simplify"""
+    def separate(self, deep=False, force=False):
+        """See the separate function in sympy.simplify"""
         from sympy.simplify import separate
         return separate(self, deep)
 
@@ -1207,10 +1930,15 @@ class Expr(Basic, EvalfMixin):
         from sympy.simplify import collect
         return collect(self, syms, evaluate, exact)
 
-    def apart(self, z=None, **args):
-        """See the apart function in sympy.simplify"""
-        from sympy.simplify import apart
-        return apart(self, z=None, **args)
+    def together(self, *args, **kwargs):
+        """See the together function in sympy.polys"""
+        from sympy.polys import together
+        return together(self, *args, **kwargs)
+
+    def apart(self, x=None, **args):
+        """See the apart function in sympy.polys"""
+        from sympy.polys import apart
+        return apart(self, x, **args)
 
     def ratsimp(self):
         """See the ratsimp function in sympy.simplify"""
@@ -1238,7 +1966,7 @@ class Expr(Basic, EvalfMixin):
         return combsimp(self)
 
     def factor(self, *gens, **args):
-        """See the factor function in sympy.simplify"""
+        """See the factor() function in sympy.polys.polytools"""
         from sympy.polys import factor
         return factor(self, *gens, **args)
 
@@ -1271,29 +1999,25 @@ class AtomicExpr(Atom, Expr):
     __slots__ = []
 
     def _eval_derivative(self, s):
-        if self==s: return S.One
+        if self == s:
+            return S.One
         return S.Zero
 
     def as_numer_denom(self):
         return self, S.One
 
-    def count_ops(self, symbolic=True):
-        return S.Zero
-
     def _eval_is_polynomial(self, syms):
         return True
 
-    @property
-    def is_number(self):
+    def _eval_is_rational_function(self, syms):
         return True
 
-    def _eval_nseries(self, x, n):
+    def _eval_nseries(self, x, n, logx):
         return self
 
 from mul import Mul
 from add import Add
 from power import Pow
-from relational import Inequality, StrictInequality
 from function import Derivative
-from sympify import _sympify, sympify, SympifyError
+from sympify import sympify
 from symbol import Wild

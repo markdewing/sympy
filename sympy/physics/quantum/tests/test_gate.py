@@ -1,7 +1,9 @@
 from sympy import exp, symbols, sqrt, I, pi, Mul, Integer
 from sympy.matrices.matrices import Matrix
 
-from sympy.physics.quantum.gate import *
+from sympy.physics.quantum.gate import (XGate, YGate, ZGate, random_circuit,
+        CNOT, IdentityGate, H, X, Y, S, T, Z, SwapGate, gate_simp, gate_sort,
+        CNotGate, TGate, HadamardGate, PhaseGate, UGate, CGate)
 from sympy.physics.quantum.commutator import Commutator
 from sympy.physics.quantum.anticommutator import AntiCommutator
 from sympy.physics.quantum.represent import represent
@@ -9,7 +11,7 @@ from sympy.physics.quantum.qapply import qapply
 from sympy.physics.quantum.qubit import Qubit, IntQubit, qubit_to_matrix,\
      matrix_to_qubit
 from sympy.physics.quantum.matrixutils import matrix_to_zero
-
+from sympy.physics.quantum import Dagger
 
 def test_gate():
     """Test a basic gate."""
@@ -17,10 +19,8 @@ def test_gate():
     assert h.min_qubits == 2
     assert h.nqubits == 1
 
-
-def test_ugate():
-    """Test the general UGate."""
-    a,b,c,d = symbols('abcd')
+def test_UGate():
+    a,b,c,d = symbols('a,b,c,d')
     uMat = Matrix([[a,b],[c,d]])
 
     # Test basic case where gate exists in 1-qubit space
@@ -75,10 +75,8 @@ def test_cgate():
     assert matrix_to_qubit(represent(CPhaseGate*Qubit('11'), nqubits=2)) == \
         I*Qubit('11')
 
-
-def test_ugate_cgate_combo():
-    """Test a UGate/CGate combination."""
-    a,b,c,d = symbols('abcd')
+def test_UGate_CGate_combo():
+    a,b,c,d = symbols('a,b,c,d')
     uMat = Matrix([[a,b],[c,d]])
     cMat = Matrix([[1,0,0,0],[0,1,0,0],[0,0,a,b],[0,0,c,d]])
 
@@ -212,7 +210,6 @@ def test_swap_gate():
             assert represent(SwapGate(i,j), nqubits=nqubits) ==\
                 represent(SwapGate(i,j).decompose(), nqubits=nqubits)
 
-
 def test_one_qubit_commutators():
     """Test single qubit gate commutation relations."""
     for g1 in (IdentityGate, X, Y, Z, H, T, S):
@@ -258,3 +255,38 @@ def test_random_circuit():
     assert m.shape == (8,8)
     assert isinstance(m, Matrix)
 
+def test_hermitian_XGate():
+    x = XGate(1, 2)
+    x_dagger = Dagger(x)
+
+    assert (x == x_dagger)
+
+def test_hermitian_YGate():
+    y = YGate(1, 2)
+    y_dagger = Dagger(y)
+
+    assert (y == y_dagger)
+
+def test_hermitian_ZGate():
+    z = ZGate(1, 2)
+    z_dagger = Dagger(z)
+
+    assert (z == z_dagger)
+
+def test_unitary_XGate():
+    x = XGate(1, 2)
+    x_dagger = Dagger(x)
+
+    assert (x*x_dagger == 1)
+
+def test_unitary_YGate():
+    y = YGate(1, 2)
+    y_dagger = Dagger(y)
+
+    assert (y*y_dagger == 1)
+
+def test_unitary_ZGate():
+    z = ZGate(1, 2)
+    z_dagger = Dagger(z)
+
+    assert (z*z_dagger == 1)

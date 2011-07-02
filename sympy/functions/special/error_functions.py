@@ -1,4 +1,5 @@
-from sympy.core import S, C, sympify, Function, cacheit
+from sympy.core import S, C, sympify, cacheit
+from sympy.core.function import Function, ArgumentIndexError
 from sympy.functions.elementary.miscellaneous import sqrt
 
 ###############################################################################
@@ -45,7 +46,7 @@ class erf(Function):
             if len(previous_terms) > 2:
                 return -previous_terms[-2] * x**2 * (n-2)/(n*k)
             else:
-                return 2*(-1)**k * x**n/(n*C.Factorial(k)*sqrt(S.Pi))
+                return 2*(-1)**k * x**n/(n*C.factorial(k)*sqrt(S.Pi))
 
     def _eval_as_leading_term(self, x):
         arg = self.args[0].as_leading_term(x)

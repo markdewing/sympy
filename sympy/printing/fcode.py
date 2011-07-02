@@ -204,7 +204,7 @@ class FCodePrinter(CodePrinter):
                 self._not_supported.add(expr)
         return "%s(%s)" % (name, self.stringify(expr.args, ", "))
 
-    _print_Factorial = _print_Function
+    _print_factorial = _print_Function
 
     def _print_ImaginaryUnit(self, expr):
         # purpose: print complex numbers nicely in Fortran.
@@ -245,8 +245,8 @@ class FCodePrinter(CodePrinter):
         p, q = int(expr.p), int(expr.q)
         return "%d.0d0/%d.0d0" % (p, q)
 
-    def _print_Real(self, expr):
-        printed = CodePrinter._print_Real(self, expr)
+    def _print_Float(self, expr):
+        printed = CodePrinter._print_Float(self, expr)
         e = printed.find('e')
         if e > -1:
             return "%sd%s" % (printed[:e], printed[e+1:])
@@ -396,7 +396,7 @@ def fcode(expr, **settings):
                             [default='fixed']
 
        >>> from sympy import fcode, symbols, Rational, pi, sin
-       >>> x, tau = symbols(["x", "tau"])
+       >>> x, tau = symbols('x,tau')
        >>> fcode((2*tau)**Rational(7,2))
        '      8*sqrt(2.0d0)*tau**(7.0d0/2.0d0)'
        >>> fcode(sin(x), assign_to="s")
