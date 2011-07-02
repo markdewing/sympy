@@ -206,6 +206,12 @@ def test_latex_Piecewise():
     assert latex(p, itex=True) == "\\begin{cases} x & \\text{for}\: x \\lt 1 \\\\x^{2} &" \
                                   " \\text{otherwise} \\end{cases}"
 
+    p2 = Piecewise((x,x<1),(x**2,x>=1))
+    assert latex(p2) == "\\begin{cases} x & \\text{for}\: x < 1 \\\\x^{2} &" \
+                        " \\text{for}\: 1 \\leq x \\end{cases}"
+    assert latex(p2, itex=True) == "\\begin{cases} x & \\text{for}\: x \\lt 1 \\\\x^{2} &" \
+                                   " \\text{for}\: 1 \\leq x \\end{cases}"
+
 def test_latex_Matrix():
     M = Matrix([[1+x, y],[y, x-1]])
     assert latex(M) == '\\left(\\begin{smallmatrix}x + 1 & y\\\\y & x -'\
