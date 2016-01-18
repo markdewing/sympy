@@ -48,9 +48,6 @@ llvm.initialize()
 llvm.initialize_native_target()
 llvm.initialize_native_asmprinter()
 
-target_machine = llvm.Target.from_default_triple().create_target_machine()
-module = ll.Module()
-
 # Eventually need to encapsulate the memory storage and array access code
 _pyobject_head = [ll.IntType(64), ll.PointerType(ll.IntType(32))]
 _head_len = len(_pyobject_head)
@@ -219,10 +216,15 @@ class LLVMJitPrinter(sympy.printing.printer.Printer):
         return self.builder.call(fn, [e0], name)
 
 # ensure lifetime of the execution engine persists (else call to compiled function will seg fault)
-exe_eng = None
+exe_engines = []
 
-def llvm_jit_code(expr, args=None):
-    global exe_eng
+
+link_names = set()
+current_link_suffix = 0
+
+def llvm_jit_code(expr, args=None, link_name=None):
+    global exe_engines, current_link_suffix
+    module = ll.Module('mod1')
     lj = LLVMJitPrinter(args=args)
 
     fp_type = ll.DoubleType()
@@ -233,8 +235,18 @@ def llvm_jit_code(expr, args=None):
             arg_type = _array_pointer
         arg_types.append(arg_type)
 
+    if not link_name:
+        default_link_name = 'jit_func'
+        current_link_suffix += 1
+        link_name = default_link_name + str(current_link_suffix)
+    if link_name in link_names:
+        print("Error, name already used: %s"%link_name)
+        return
+
+    link_names.add(link_name)
+
     fn_type = ll.FunctionType(fp_type, arg_types)
-    fn = ll.Function(module, fn_type, name="func_one")
+    fn = ll.Function(module, fn_type, name=link_name)
     lj.module = module
     lj.param_dict = {}
     for i,a in enumerate(args):
@@ -264,20 +276,24 @@ def llvm_jit_code(expr, args=None):
 
     pass_manager.run(llmod)
 
+    target_machine = llvm.Target.from_default_triple().create_target_machine()
     exe_eng = llvm.create_mcjit_compiler(llmod, target_machine)
     exe_eng.finalize_object()
+    exe_engines.append(exe_eng)
 
     #print("Assembly")
     #print(target_machine.emit_assembly(llmod))
 
-    fptr = exe_eng.get_pointer_to_function(llmod.get_function("func_one"))
+    fptr = exe_eng.get_pointer_to_function(llmod.get_function(link_name))
+
 
     return fptr
 
 
-def get_jit_callable(expr, args=None):
+
+def get_jit_callable(expr, args=None, link_name=None):
     '''Create an executable function from a Sympy expression'''
-    fptr = llvm_jit_code(expr, args)
+    fptr = llvm_jit_code(expr, args, link_name)
     arg_ctypes = []
     for arg in args:
         arg_ctype = ctypes.c_double
