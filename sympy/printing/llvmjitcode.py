@@ -59,12 +59,12 @@ class LLVMJitPrinter(Printer):
         if expr.exp == S.NegativeOne:
             return self.builder.fdiv(ll.Constant(self.fp_type, 1.0), base0)
         if expr.exp == S.Half:
-            fn = self.ext_fn.get("sqrt")
+            fn = self.ext_fn.get("llvm.sqrt.f64")
             if not fn:
                 fn_type = ll.FunctionType(self.fp_type, [self.fp_type])
-                fn = ll.Function(self.module, fn_type, "sqrt")
-                self.ext_fn["sqrt"] = fn
-            return self.builder.call(fn, [base0], "sqrt")
+                fn = ll.Function(self.module, fn_type, "llvm.sqrt.f64")
+                self.ext_fn["llvm.sqrt.f64"] = fn
+            return self.builder.call(fn, [base0], "llvm.sqrt.f64")
         if expr.exp == 2:
             return self.builder.fmul(base0, base0)
 
@@ -107,6 +107,7 @@ class LLVMJitPrinter(Printer):
                         % type(expr))
 
 
+
 # Used when parameters are passed by array.  Often used in callbacks to
 # handle a variable number of parameters.
 class LLVMJitCallbackPrinter(LLVMJitPrinter):
@@ -136,6 +137,85 @@ class LLVMJitCallbackPrinter(LLVMJitPrinter):
         return value
 
 
+class LoopCreator(object):
+    def __init__(self, builder, func):
+        self.builder = builder
+        self.func = func
+
+    def start(self, start_value, end_value, step_value):
+        self.start_value = start_value
+        self.end_value = end_value
+        self.step_value = step_value
+        self.pre_header_block = self.func.append_basic_block()
+        self.builder.branch(self.pre_header_block)
+        self.loop_block = self.func.append_basic_block('loop')
+        self.exit_block = self.func.append_basic_block('afterloop')
+        self.builder.position_at_end(self.pre_header_block)
+        self.builder.branch(self.loop_block)
+
+        self.builder.position_at_end(self.loop_block)
+        self.index = self.builder.phi(ll.IntType(32))
+        self.index.add_incoming(self.start_value, self.pre_header_block)
+
+        return self.index
+
+    def add_next(self):
+        self.next_value = self.builder.add(self.index, self.step_value, 'next')
+        self.index.add_incoming(self.next_value, self.loop_block)
+
+    def finish(self):
+        end_compare = self.builder.icmp_unsigned('<', self.next_value, self.end_value, 'loopcond')
+        self.br = self.builder.cbranch(end_compare, self.loop_block, self.exit_block)
+        self.builder.position_at_end(self.exit_block)
+
+    def add_loop_metadata(self, md):
+        mtmp = ll.MDSelfValue(self.builder.module, 'tmp')
+        m = [mtmp]
+        m.extend(md)
+        mref1 = self.builder.module.add_metadata(m)
+        mtmp.pname = mref1.name
+        self.br.set_metadata("llvm.loop", mref1)
+
+
+
+# ndim - dimension of integrate
+# npts - number of points to evaluate
+# x[i*ndim + j] (i in npts, j in ndim)
+# fval[i*fdim + k] k in fdim 
+#   for now, fdim=1, so fval[i] = result
+class LLVMJitCallbackVectorPrinter(LLVMJitPrinter):
+    def __init__(self, *args, **kwargs):
+        self.ndim = kwargs.pop("ndim", None)
+        self.index = kwargs.pop("index", None)
+        super(LLVMJitCallbackVectorPrinter, self).__init__(*args, **kwargs)
+
+    def _print_Indexed(self, expr):
+        array, idx = self.func_arg_map[expr.base]
+        offset = int(expr.indices[0].evalf())
+        array_ptr = self.builder.gep(array, [ll.Constant(ll.IntType(32), offset)])
+        fp_array_ptr = self.builder.bitcast(array_ptr, ll.PointerType(self.fp_type))
+        value = self.builder.load(fp_array_ptr)
+        return value
+
+    def _print_Symbol(self, s):
+        val = self.tmp_var.get(s)
+        if val:
+            return val
+
+        array, idx = self.func_arg_map.get(s, [None, 0])
+        if not array:
+            raise LookupError("Symbol not found: %s" % s)
+
+        #x[i*ndim + idx] - need i and ndim
+        e = self.builder.mul(self.index, self.ndim)
+        offset = self.builder.add(e, ll.Constant(ll.IntType(32),idx))
+        array_ptr = self.builder.gep(array, [offset], inbounds=True)
+        fp_array_ptr = self.builder.bitcast(array_ptr,
+                                            ll.PointerType(self.fp_type))
+        value = self.builder.load(fp_array_ptr)
+        return value
+
+
 # ensure lifetime of the execution engine persists (else call to compiled
 #   function will seg fault)
 exe_engines = []
@@ -159,11 +239,21 @@ class LLVMJitCode(object):
     def _from_ctype(self, ctype):
         if ctype == ctypes.c_int:
             return ll.IntType(32)
+        if ctype == ctypes.c_uint:
+            return ll.IntType(32)
+        if ctype == ctypes.c_size_t:
+            return ll.IntType(64)
+        if ctype == ctypes.c_ulong:
+            return ll.IntType(64)
         if ctype == ctypes.c_double:
             return self.fp_type
         if ctype == ctypes.POINTER(ctypes.c_double):
             return ll.PointerType(self.fp_type)
+        if ctype == ctypes.POINTER(ctypes.c_int):
+            return ll.PointerType(ll.IntType(32))
         if ctype == ctypes.c_void_p:
+            return ll.PointerType(ll.IntType(32))
+        if ctype == ctypes.py_object:
             return ll.PointerType(ll.IntType(32))
 
         print("Unhandled ctype = %s" % str(ctype))
@@ -191,6 +281,29 @@ class LLVMJitCode(object):
             self.fn.args[i].name = str(a)
             self.param_dict[a] = self.fn.args[i]
 
+    def _wrap_return(self, lj, vals):
+    
+        if self.signature.ret_type == ctypes.c_double:
+            return vals[0]
+
+        void_ptr = ll.PointerType(ll.IntType(32))
+        wrap_type = ll.FunctionType(void_ptr, [self.fp_type])
+        wrap_fn = ll.Function(lj.module, wrap_type, "PyFloat_FromDouble")
+        if len(vals) == 1:
+            wrapped_val = lj.builder.call(wrap_fn, [vals[0]])
+            final_val = wrapped_val
+        else:
+            wrapped_vals = [lj.builder.call(wrap_fn, [v]) for v in vals]
+            tuple_arg_types = [ll.IntType(32)]
+            tuple_arg_types.extend([void_ptr]*len(vals))
+            tuple_type = ll.FunctionType(void_ptr, tuple_arg_types)
+            tuple_fn = ll.Function(lj.module, tuple_type, "PyTuple_Pack")
+            tuple_args =[ll.Constant(ll.IntType(32), len(wrapped_vals))]
+            tuple_args.extend(wrapped_vals)
+            final_val = lj.builder.call(tuple_fn, tuple_args)
+
+        return final_val
+
     def _create_function(self, expr):
         """Create function body and return LLVM IR"""
         bb_entry = self.fn.append_basic_block('entry')
@@ -199,8 +312,9 @@ class LLVMJitCode(object):
         lj = LLVMJitPrinter(self.module, builder, self.fn,
                             func_arg_map=self.param_dict)
 
-        ret = self._convert_expr(lj, expr)
-        lj.builder.ret(ret)
+        ret_vals = self._convert_expr(lj, expr)
+
+        lj.builder.ret(self._wrap_return(lj, ret_vals))
 
         strmod = str(self.module)
         return strmod
@@ -212,31 +326,73 @@ class LLVMJitCode(object):
             if len(expr) == 2:
                 tmp_exprs = expr[0]
                 final_exprs = expr[1]
-                if len(final_exprs) != 1:
-                    raise NotImplementedError("Returning multiple expressions not implemented")
-                final_expr = final_exprs[0]
+                #if len(final_exprs) != 1:
+                #    raise NotImplementedError("Returning multiple expressions not implemented")
+                #final_expr = final_exprs[0]
+                #final_expr = final_exprs[0]
                 for name, e in tmp_exprs:
                     val = lj._print(e)
                     lj._add_tmp_var(name, val)
         except TypeError:
-            final_expr = expr
+            final_exprs = [expr]
 
-        return lj._print(final_expr)
+        vals = [lj._print(e) for e in final_exprs]
+
+        return vals
+
+        #void_ptr = ll.PointerType(ll.IntType(32))
+        #wrap_type = ll.FunctionType(void_ptr, [self.fp_type])
+        #wrap_fn = ll.Function(lj.module, wrap_type, "PyFloat_FromDouble")
+        #if len(vals) == 1:
+        #    wrapped_val = lj.builder.call(wrap_fn, [vals[0]])
+        #    final_val = wrapped_val
+        #else:
+        #    wrapped_vals = [lj.builder.call(wrap_fn, [v]) for v in vals]
+#
+#            tuple_arg_types = [ll.IntType(32)]
+#            tuple_arg_types.extend([void_ptr]*len(vals))
+#            tuple_type = ll.FunctionType(void_ptr, tuple_arg_types)
+#            tuple_fn = ll.Function(lj.module, tuple_type, "PyTuple_Pack")
+#            tuple_args =[ll.Constant(ll.IntType(32), len(wrapped_vals))]
+#            tuple_args.extend(wrapped_vals)
+#            final_val = lj.builder.call(tuple_fn, tuple_args)
+#        return final_val
 
     def _compile_function(self, strmod):
         global exe_engines
         llmod = llvm.parse_assembly(strmod)
 
-        pmb = llvm.create_pass_manager_builder()
-        pmb.opt_level = 2
-        pass_manager = llvm.create_module_pass_manager()
-        pmb.populate(pass_manager)
+        llvm.load_library_permanently("libsleef.so")
 
+        llvm.enable_diagnostic_handler()
+        llvm.enable_debug_output()
+        target_info = llvm.create_target_library_info()
+
+        pmb = llvm.create_pass_manager_builder()
+        #pmb.opt_level = 2
+        pmb.loop_vectorize = True
+        #pmb.slp_vectorize = True
+        #print('Pass_manager, opt level = ',pmb.opt_level)
+        #print('Pass_manager, loop vec = ',pmb.loop_vectorize)
+        #print('Pass_manager, slp vec = ',pmb.slp_vectorize)
+        #print('Pass_manager, disable unroll = ',pmb.disable_unroll_loops)
+        pass_manager = llvm.create_module_pass_manager()
+
+        options = dict(cpu=llvm.get_host_cpu_name())
+        target_machine = \
+            llvm.Target.from_default_triple().create_target_machine(**options)
+        #target_machine = \
+        #    llvm.Target.from_default_triple().create_target_machine()
+        target_info = llvm.create_target_library_info()
+        
+        llvm.add_target_transform_info(target_machine, pass_manager)
+        pmb.add_library_info(target_info)
+
+        pmb.populate(pass_manager)
         pass_manager.run(llmod)
 
-        target_machine = \
-            llvm.Target.from_default_triple().create_target_machine()
         exe_eng = llvm.create_mcjit_compiler(llmod, target_machine)
+        exe_eng.enable_jit_events()
         exe_eng.finalize_object()
         exe_engines.append(exe_eng)
 
@@ -262,7 +418,6 @@ class LLVMJitCodeCallback(LLVMJitCode):
             else:
                 self.param_dict[a] = (self.fn.args[self.signature.input_arg],
                                       i)
-
     def _create_function(self, expr):
         """Create function body and return LLVM IR"""
         bb_entry = self.fn.append_basic_block('entry')
@@ -271,17 +426,114 @@ class LLVMJitCodeCallback(LLVMJitCode):
         lj = LLVMJitCallbackPrinter(self.module, builder, self.fn,
                                     func_arg_map=self.param_dict)
 
-        ret = self._convert_expr(lj, expr)
+        ret_vals = self._convert_expr(lj, expr)
 
         if self.signature.ret_arg:
-            builder.store(ret, self.fn.args[self.signature.ret_arg])
+            #builder.store(ret, self.fn.args[self.signature.ret_arg])
+            output_fp_ptr = builder.bitcast(self.fn.args[self.signature.ret_arg], ll.PointerType(self.fp_type))
+            for index,val in enumerate(ret_vals):
+                index_val = ll.Constant(ll.IntType(32), index)
+                output_array_ptr = builder.gep(output_fp_ptr, [index_val])
+                builder.store(val, output_array_ptr)
             builder.ret(ll.Constant(ll.IntType(32), 0))  # return success
         else:
-            lj.builder.ret(ret)
+            lj.builder.ret(self._wrap_return(lj, ret_vals))
 
         strmod = str(self.module)
         return strmod
 
+
+class LLVMJitCodeCallbackVector(LLVMJitCode):
+    def __init__(self, signature):
+        super(LLVMJitCodeCallbackVector, self).__init__(signature)
+
+    def _create_param_dict(self, func_args):
+        for i, a in enumerate(func_args):
+            if isinstance(a, IndexedBase):
+                self.param_dict[a] = (self.fn.args[i], i)
+                self.fn.args[i].name = str(a)
+            else:
+                self.param_dict[a] = (self.fn.args[self.signature.input_arg],
+                                      i)
+    def _create_function(self, expr):
+        """Create function body and return LLVM IR"""
+
+        iargs = []
+        iargs.append(self.signature.input_arg)
+        iargs.append(self.signature.ret_arg)
+        if self.signature.ndim_is_pointer:
+            iargs.append(self.signature.ndim_arg)
+
+        if self.signature.ncomp_is_pointer:
+            iargs.append(self.signature.ncomp_arg)
+
+        if self.signature.vector_len_is_pointer:
+            iargs.append(self.signature.vector_len_arg)
+
+        for i in iargs:
+            self.fn.args[i].add_attribute("nocapture")
+            self.fn.args[i].add_attribute("noalias")
+
+        bb_entry = self.fn.append_basic_block('entry')
+        builder = ll.IRBuilder(bb_entry)
+
+        loop = LoopCreator(builder, self.fn)
+        
+        start = ll.Constant(ll.IntType(32), 0)
+        step = ll.Constant(ll.IntType(32), 1)
+        #end = builder.trunc(self.fn.args[1], ll.IntType(32))
+        vec_len = self.fn.args[self.signature.vector_len_arg]
+        if self.signature.vector_len_is_pointer:
+            vec_len = builder.load(vec_len)
+        end = builder.trunc(vec_len, ll.IntType(32))
+        index_var = loop.start(start, end, step)
+
+        #ndim = self.fn.args[self.signature.ndim_arg]
+        #if self.signature.ndim_is_pointer:
+        #    ndim = builder.load(ndim)
+        ndim = ll.Constant(ll.IntType(32), len(self.param_dict))
+        lj = LLVMJitCallbackVectorPrinter(self.module, builder, self.fn,
+                                    ndim=ndim, index=index_var,
+                                    func_arg_map=self.param_dict)
+
+        ret_vals = self._convert_expr(lj, expr)
+        output_fp_ptr = builder.bitcast(self.fn.args[self.signature.ret_arg], ll.PointerType(self.fp_type))
+        #output_array_ptr = builder.gep(self.fn.args[self.signature.ret_arg],
+        #                               [ll.Constant(ll.IntType(32), index_var)])
+
+        # fval[i*fdim + k]
+        # i is 0..npts and k is 0..fdim
+        #  index_var*ncomp + ret_vals index
+
+        ncomp = self.fn.args[self.signature.ncomp_arg]
+        if self.signature.ncomp_is_pointer:
+            ncomp = builder.load(ncomp)
+
+        # should assert that ncomp == len(ret_vals)
+
+        #idx1 = builder.mul(ncomp, index_var)
+        idx1 = builder.mul(index_var, ll.Constant(ll.IntType(32), len(ret_vals)))
+        for val_idx,ret in enumerate(ret_vals):
+            idx2 = builder.add(idx1, ll.Constant(ll.IntType(32), val_idx))
+            output_array_ptr = builder.gep(output_fp_ptr, [idx2], inbounds=True)
+            builder.store(ret, output_array_ptr)
+
+        loop.add_next()
+        loop.finish()
+
+        #mref3 = builder.module.add_metadata([ll.MetaDataString(builder.module,"llvm.loop.vectorize"),ll.Constant(ll.IntType(32), 1)])
+        mref4 = builder.module.add_metadata([ll.MetaDataString(builder.module,"llvm.loop.interleave.count"),ll.Constant(ll.IntType(32), 4)])
+        loop.add_loop_metadata([mref4])
+
+
+        #if self.signature.ret_arg:
+        #    builder.store(ret, self.fn.args[self.signature.ret_arg])
+        builder.ret(ll.Constant(ll.IntType(32), 0))  # return success
+        #else:
+        #    lj.builder.ret(ret)
+
+        strmod = str(self.module)
+        return strmod
 
 class CodeSignature(object):
     def __init__(self, ret_type):
@@ -295,13 +547,29 @@ class CodeSignature(object):
         # than the return value
         self.ret_arg = None
 
+        # Number of dimensions (arguments)
+        self.ndim_arg = 0
+        self.ndim_is_pointer = False
+
+        # For vector inputs, which argument is the vector length
+        self.vector_len_arg = None
+        self.vector_len_is_pointer = False
+
+        # Number of components (return values)
+        self.ncomp_arg = 0
+        self.ncomp_is_pointer = False
+
 
 def _llvm_jit_code(args, expr, signature, callback_type):
     """Create a native code function from a Sympy expression"""
     if callback_type is None:
         jit = LLVMJitCode(signature)
     else:
-        jit = LLVMJitCodeCallback(signature)
+        #if callback_type == "cubature_v":
+        if signature.vector_len_arg is None:
+            jit = LLVMJitCodeCallback(signature)
+        else:
+            jit = LLVMJitCodeCallbackVector(signature)
 
     jit._create_args(args)
     jit._create_function_base()
@@ -380,7 +648,8 @@ def llvm_callable(args, expr, callback_type=None):
     if not llvmlite:
         raise ImportError("llvmlite is required for llvmjitcode")
 
-    signature = CodeSignature(ctypes.c_double)
+    #signature = CodeSignature(ctypes.c_double)
+    signature = CodeSignature(ctypes.py_object)
 
     arg_ctypes = []
     if callback_type is None:
@@ -390,17 +659,56 @@ def llvm_callable(args, expr, callback_type=None):
     elif callback_type == 'scipy.integrate' or callback_type == 'scipy.integrate.test':
         arg_ctypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_double)]
         arg_ctypes_formal = [ctypes.c_int, ctypes.c_double]
+        signature.ret_type = ctypes.c_double
         signature.input_arg = 1
     elif callback_type == 'cubature':
-        arg_ctypes = [ctypes.c_int,
-                      ctypes.POINTER(ctypes.c_double),
-                      ctypes.c_void_p,
-                      ctypes.c_int,
-                      ctypes.POINTER(ctypes.c_double)
+        arg_ctypes = [ctypes.c_int,                    # unsigned ndim
+                      ctypes.POINTER(ctypes.c_double), # const double *x
+                      ctypes.c_void_p,                 # void *fdata
+                      ctypes.c_int,                    # unsigned fdim
+                      ctypes.POINTER(ctypes.c_double)  # double *fval
                       ]
         signature.ret_type = ctypes.c_int
         signature.input_arg = 1
         signature.ret_arg = 4
+    elif callback_type == 'cubature_v':
+        arg_ctypes = [ctypes.c_int,                   # unsigned ndim
+                      ctypes.c_size_t,                 # size_t npts
+                      ctypes.POINTER(ctypes.c_double), # const double *x
+                      ctypes.c_void_p,                 # void *fdata
+                      ctypes.c_int,                   # unsigned fdim
+                      ctypes.POINTER(ctypes.c_double)  # double *fval
+                      ]
+        signature.ret_type = ctypes.c_int
+        signature.input_arg = 2
+        signature.ret_arg = 5
+        signature.ncomp_arg = 4
+        signature.vector_len_arg = 1
+    elif callback_type == 'cuba' or callback_type == 'cuba_v':
+        arg_ctypes_formal = [ctypes.POINTER(ctypes.c_int),    # int* ndim
+                      ctypes.POINTER(ctypes.c_double), # const double *x
+                      ctypes.POINTER(ctypes.c_int),    # int* ncomp
+                      ctypes.POINTER(ctypes.c_double), # double *f
+                      ctypes.c_void_p                  # void *fdata
+                      ]
+        arg_ctypes = [ctypes.POINTER(ctypes.c_int),    # int* ndim
+                      ctypes.POINTER(ctypes.c_double), # const double *x
+                      ctypes.POINTER(ctypes.c_int),    # int* ncomp
+                      ctypes.POINTER(ctypes.c_double), # double *f
+                      ctypes.c_void_p,                 # void *fdata
+                      ctypes.POINTER(ctypes.c_int),    # int* nvec
+                      ctypes.POINTER(ctypes.c_int),    # int* core
+                      ]
+        signature.ret_type = ctypes.c_int
+        signature.input_arg = 1
+        signature.ndim_arg = 0
+        signature.ndim_is_pointer = True
+        signature.ncomp_arg = 2
+        signature.ncomp_is_pointer = True
+        signature.ret_arg = 3
+        if callback_type == 'cuba_v':
+            signature.vector_len_arg = 5
+            signature.vector_len_is_pointer = True
     else:
         print("Unknown callback type: %s" % callback_type)
         return None
@@ -409,7 +717,7 @@ def llvm_callable(args, expr, callback_type=None):
 
     fptr = _llvm_jit_code(args, expr, signature, callback_type)
 
-    if callback_type and callback_type == 'scipy.integrate':
+    if callback_type and callback_type in ['scipy.integrate','cuba','cuba_v']:
         arg_ctypes = arg_ctypes_formal
 
     cfunc = ctypes.CFUNCTYPE(signature.ret_type, *arg_ctypes)(fptr)
