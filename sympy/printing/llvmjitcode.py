@@ -168,13 +168,13 @@ class LoopCreator(object):
         self.br = self.builder.cbranch(end_compare, self.loop_block, self.exit_block)
         self.builder.position_at_end(self.exit_block)
 
-    def add_loop_metadata(self, md):
-        mtmp = ll.MDSelfValue(self.builder.module, 'tmp')
-        m = [mtmp]
-        m.extend(md)
-        mref1 = self.builder.module.add_metadata(m)
-        mtmp.pname = mref1.name
-        self.br.set_metadata("llvm.loop", mref1)
+    #def add_loop_metadata(self, md):
+    #    mtmp = ll.MDSelfValue(self.builder.module, 'tmp')
+    #   m = [mtmp]
+    #    m.extend(md)
+    #    mref1 = self.builder.module.add_metadata(m)
+    #    mtmp.pname = mref1.name
+    #    self.br.set_metadata("llvm.loop", mref1)
 
 
 
@@ -362,11 +362,11 @@ class LLVMJitCode(object):
         global exe_engines
         llmod = llvm.parse_assembly(strmod)
 
-        llvm.load_library_permanently("libsleef.so")
+        #llvm.load_library_permanently("libsleef.so")
 
         llvm.enable_diagnostic_handler()
         llvm.enable_debug_output()
-        target_info = llvm.create_target_library_info()
+        #target_info = llvm.create_target_library_info()
 
         pmb = llvm.create_pass_manager_builder()
         #pmb.opt_level = 2
@@ -379,20 +379,20 @@ class LLVMJitCode(object):
         pass_manager = llvm.create_module_pass_manager()
 
         options = dict(cpu=llvm.get_host_cpu_name())
-        target_machine = \
-            llvm.Target.from_default_triple().create_target_machine(**options)
+        #target_machine = \
+        #    llvm.Target.from_default_triple().create_target_machine(**options)
         #target_machine = \
         #    llvm.Target.from_default_triple().create_target_machine()
-        target_info = llvm.create_target_library_info()
+        #target_info = llvm.create_target_library_info()
         
-        llvm.add_target_transform_info(target_machine, pass_manager)
-        pmb.add_library_info(target_info)
+        #llvm.add_target_transform_info(target_machine, pass_manager)
+        #pmb.add_library_info(target_info)
 
         pmb.populate(pass_manager)
         pass_manager.run(llmod)
 
         exe_eng = llvm.create_mcjit_compiler(llmod, target_machine)
-        exe_eng.enable_jit_events()
+        #exe_eng.enable_jit_events()
         exe_eng.finalize_object()
         exe_engines.append(exe_eng)
 
@@ -522,8 +522,8 @@ class LLVMJitCodeCallbackVector(LLVMJitCode):
         loop.finish()
 
         #mref3 = builder.module.add_metadata([ll.MetaDataString(builder.module,"llvm.loop.vectorize"),ll.Constant(ll.IntType(32), 1)])
-        mref4 = builder.module.add_metadata([ll.MetaDataString(builder.module,"llvm.loop.interleave.count"),ll.Constant(ll.IntType(32), 4)])
-        loop.add_loop_metadata([mref4])
+        #mref4 = builder.module.add_metadata([ll.MetaDataString(builder.module,"llvm.loop.interleave.count"),ll.Constant(ll.IntType(32), 4)])
+        #loop.add_loop_metadata([mref4])
 
 
         #if self.signature.ret_arg:
